@@ -2,575 +2,540 @@ package main
 
 import (
 	"fmt"
-	"math"
+	"os"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/ledongthuc/pdf"
 )
 
-var currentIPO = struct {
-	StockName         string  // 股票名称（含代码）
-	PriceMax          float64 // 最高发行价（HKD）
-	LotSize           int     // 每手股数
-	TotalApplicants   int     // 总申请人数
-	BGroupApplicants  int     // 乙组申请人数（0表示自动计算为总人数的5%）
-	PublicOfferShares float64 // 公開發售股數（单位：万股，计算时自动换算为股数）
-	OneLotRate        float64 // 一手档人数占比（默认0.40，即40%）
-	ATailRate         float64 // 甲尾人数占比（默认0.02，即总人数的2%）
-	BHeadRate         float64 // 乙头人数占比（默认0.03，即总人数的3%）
-}{StockName: "兆易創新 (03986.HK)", PriceMax: 162.0, LotSize: 100, TotalApplicants: 148419, BGroupApplicants: 0, PublicOfferShares: 289.16, OneLotRate: 0.34, ATailRate: 0.02, BHeadRate: 0.03}
+// SubscriptionTier 申购阶梯信息
+type SubscriptionTier struct {
+	Lots   int     // 申购手数
+	Amount float64 // 应付金额（HK$）
+}
 
-func getValidLots(priceMax float64, lotSize int) (aTail, bHead int64) {
-	oneLotPrice := priceMax * float64(lotSize)
-	var lastLots int64
-	steps := []struct{ limit, step int64 }{{10, 1}, {100, 10}, {1000, 100}, {10000, 500}, {100000, 1000}}
-	for _, s := range steps {
-		for i := lastLots + s.step; i <= s.limit; i += s.step {
-			if cost := float64(i) * oneLotPrice; cost > 5000000 {
-				return lastLots, i
+// IPOInfo 存储从PDF中提取的IPO基本信息
+type IPOInfo struct {
+	StockName             string  // 股票名称（含代码）
+	PriceMax              float64 // 最高发行价（HKD）
+	LotSize               int     // 每手股数
+	GlobalOffering        int64   // 全球发售总股数
+	HKPublicOffering      int64   // 香港公开发售股数
+	InternationalOffering int64   // 国际发售股数
+	Fees                  struct {
+		Brokerage   float64 // 经纪费 (%)
+		SFCLevy     float64 // SFC交易征费 (%)
+		ExchangeFee float64 // 港交所交易费 (%)
+		AFRCLevy    float64 // AFRC交易征费 (%)
+	}
+	SubscriptionTiers []SubscriptionTier // 申购阶梯表
+}
+
+// extractIPOInfo 从PDF文本中提取IPO信息
+func extractIPOInfo(text string) IPOInfo {
+	info := IPOInfo{}
+
+	// 1. 提取股票名称和代码
+	// 匹配模式：公司名称 + 股票代码（通常在 "Stock code:" 或 "股票代码:" 后面）
+	stockCodePattern := regexp.MustCompile(`(?i)(?:Stock\s+code|股票代码|股份代号)[:\s]+(\d{4})`)
+	stockCodeMatch := stockCodePattern.FindStringSubmatch(text)
+
+	// 匹配公司名称（通常在PDF开头或"Global Offering"附近）
+	// 优先匹配包含"GROUP"、"CO."、"LTD"等关键词的公司名
+	companyPatterns := []*regexp.Regexp{
+		regexp.MustCompile(`([A-Z][A-Z\s&,\.\-]+(?:GROUP|CO\.|LTD\.|LIMITED|COMPANY|INC\.))`),
+		regexp.MustCompile(`([A-Z][A-Z\s&,\.\-]+(?:CO\.|LTD\.|LIMITED))`),
+	}
+
+	var companyName string
+	for _, pattern := range companyPatterns {
+		matches := pattern.FindAllString(text, 10)
+		if len(matches) > 0 {
+			// 选择最长的匹配（通常是完整的公司名）
+			for _, match := range matches {
+				trimmed := strings.TrimSpace(match)
+				if len(trimmed) > len(companyName) && len(trimmed) < 100 {
+					companyName = trimmed
+				}
 			}
-			lastLots = i
-		}
-	}
-	return
-}
-
-// TierInfo 存储每个档位的信息
-type TierInfo struct {
-	Lots       int64
-	Applicants int
-	Group      string
-}
-
-// WinRateInfo 存储中签率信息
-type WinRateInfo struct {
-	Lots             int64
-	Applicants       int // 申请人数
-	Group            string
-	SubscribedShares int64   // 申购总股数
-	AllocatedShares  int64   // 分配到的股数
-	WinRate          float64 // 每手中签率（分配股数/申购股数）
-	WinApplicants    int     // 中签人数
-	AllocatedLots    int64   // 中签手数（整数）
-	LotDistribution  string  // 手数分配详情（如"X人中n手，Y人中m手"）
-}
-
-// formatLotDistribution 格式化手数分配详情
-// 格式：X人中n手，另外Y人多分配m手
-func formatLotDistribution(allocatedShares int64, winApplicants int, sharesPerLot int64, maxLots int64) string {
-	if winApplicants == 0 {
-		return "无人中签"
-	}
-
-	totalLots := allocatedShares / sharesPerLot
-	if totalLots == 0 {
-		return "无人中签"
-	}
-
-	avgLots := float64(totalLots) / float64(winApplicants)
-	avgLotsInt := int64(avgLots)
-
-	// 限制不超过最大申购手数
-	if avgLotsInt > maxLots {
-		avgLotsInt = maxLots
-	}
-
-	if avgLots == float64(avgLotsInt) {
-		// 所有人中签手数相同
-		return fmt.Sprintf("%d人中%d手", winApplicants, avgLotsInt)
-	}
-
-	// 分配不均，需要计算不同手数的分配
-	// 基础手数：avgLotsInt手
-	// 多分配手数：higherLots = avgLotsInt + 1手
-	// 多分配人数：higherCount = totalLots - avgLotsInt*winApplicants
-	higherLots := avgLotsInt + 1
-	if higherLots > maxLots {
-		higherLots = maxLots
-		avgLotsInt = maxLots
-		// 如果都超过maxLots，所有人都中maxLots手
-		if avgLotsInt >= maxLots {
-			return fmt.Sprintf("%d人中%d手", winApplicants, maxLots)
-		}
-	}
-
-	higherCount := totalLots - avgLotsInt*int64(winApplicants)
-	lowerCount := int64(winApplicants) - higherCount
-
-	if higherCount <= 0 {
-		// 所有人都中基础手数
-		return fmt.Sprintf("%d人中%d手", winApplicants, avgLotsInt)
-	}
-
-	if lowerCount <= 0 {
-		// 所有人都中higherLots手
-		return fmt.Sprintf("%d人中%d手", winApplicants, higherLots)
-	}
-
-	// 格式：X人中n手，另外Y人多分配m手
-	extraLots := higherLots - avgLotsInt
-	return fmt.Sprintf("%d人中%d手，另外%d人多分配%d手", winApplicants, avgLotsInt, higherCount, extraLots)
-}
-
-// EstimateAllTiers 推算所有档位的人数分布
-func EstimateAllTiers(totalApplicants, bGroupApplicants int, oneLotRate, aTailRate, bHeadRate float64, aTail, bHead int64) []TierInfo {
-	var tiers []TierInfo
-
-	// 计算各组总人数
-	bGroupTotal := bGroupApplicants
-	if bGroupTotal == 0 && totalApplicants > 0 {
-		bGroupTotal = int(float64(totalApplicants) * 0.05)
-	}
-	aGroupTotal := totalApplicants - bGroupTotal
-
-	// 设置默认值
-	if oneLotRate == 0 {
-		oneLotRate = 0.40
-	}
-	if aTailRate == 0 {
-		aTailRate = 0.02
-	}
-	if bHeadRate == 0 {
-		bHeadRate = 0.03
-	}
-
-	// 计算已知档位人数
-	oneLotApplicants := int(float64(aGroupTotal) * oneLotRate)
-	aTailApplicants := int(float64(totalApplicants) * aTailRate)
-	bHeadApplicants := int(float64(totalApplicants) * bHeadRate)
-
-	// 生成甲组所有档位（1手到甲尾）
-	var aTiers []TierInfo
-	var aLots []int64
-	aLots = append(aLots, 1) // 一手档
-	var lastLots int64 = 1
-	steps := []struct{ limit, step int64 }{{10, 1}, {100, 10}, {1000, 100}, {10000, 500}, {100000, 1000}}
-	for _, s := range steps {
-		for i := lastLots + s.step; i <= s.limit && i <= aTail; i += s.step {
-			if i != 1 { // 避免重复添加1手
-				aLots = append(aLots, i)
+			if companyName != "" {
+				break
 			}
-			lastLots = i
-		}
-		if lastLots >= aTail {
-			break
-		}
-	}
-	if aTail > 1 && (len(aLots) == 0 || aLots[len(aLots)-1] < aTail) {
-		aLots = append(aLots, aTail)
-	}
-
-	// 分配甲组人数（指数衰减模型）
-	aOtherApplicants := aGroupTotal - oneLotApplicants - aTailApplicants
-	if aOtherApplicants < 0 {
-		aOtherApplicants = 0
-	}
-
-	// 添加一手档
-	aTiers = append(aTiers, TierInfo{Lots: 1, Applicants: oneLotApplicants, Group: "甲组"})
-
-	// 分配中间档位人数
-	if len(aLots) > 2 {
-		totalWeight := 0.0
-		weights := make([]float64, len(aLots)-2)
-		for i := 1; i < len(aLots)-1; i++ {
-			weight := 1.0 / float64(aLots[i]) // 指数衰减
-			weights[i-1] = weight
-			totalWeight += weight
-		}
-
-		for i := 1; i < len(aLots)-1; i++ {
-			applicants := int(float64(aOtherApplicants) * weights[i-1] / totalWeight)
-			aTiers = append(aTiers, TierInfo{Lots: aLots[i], Applicants: applicants, Group: "甲组"})
 		}
 	}
 
-	// 添加甲尾
-	if aTail > 1 {
-		aTiers = append(aTiers, TierInfo{Lots: aTail, Applicants: aTailApplicants, Group: "甲组"})
+	if companyName != "" {
+		if len(stockCodeMatch) > 1 {
+			info.StockName = fmt.Sprintf("%s (%s.HK)", companyName, stockCodeMatch[1])
+		} else {
+			// 如果没有找到股票代码，尝试从文本中查找4位数字
+			codePattern := regexp.MustCompile(`\b(\d{4})\b`)
+			codeMatch := codePattern.FindString(text)
+			if codeMatch != "" {
+				info.StockName = fmt.Sprintf("%s (%s.HK)", companyName, codeMatch)
+			} else {
+				info.StockName = companyName
+			}
+		}
 	}
 
-	// 生成乙组档位（乙头、乙二、乙三...）
-	bOtherApplicants := bGroupTotal - bHeadApplicants
-	if bOtherApplicants < 0 {
-		bOtherApplicants = 0
+	// 2. 提取最高发行价
+	// 匹配模式：HK$236.60 或 Maximum Offer Price: HK$236.60
+	pricePatterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:Maximum\s+Offer\s+Price|最高发行价|最高发售价)[:\s]+HK\$\s*([\d,]+\.?\d*)`),
+		regexp.MustCompile(`(?i)HK\$\s*([\d,]+\.?\d*)\s+per\s+(?:H\s+)?Share`),
+		regexp.MustCompile(`HK\$\s*([\d,]+\.?\d*)`),
 	}
 
-	var bTiers []TierInfo
-	var bLots []int64
-	bLots = append(bLots, bHead)
-	lastLots = bHead
+	var maxPrice float64
+	for _, pattern := range pricePatterns {
+		matches := pattern.FindAllStringSubmatch(text, -1)
+		for _, match := range matches {
+			if len(match) > 1 && match[1] != "" {
+				priceStr := strings.ReplaceAll(match[1], ",", "")
+				if price, err := strconv.ParseFloat(priceStr, 64); err == nil {
+					// 只接受合理的价格范围（港股通常在0.01-10000之间）
+					if price > 0.01 && price < 10000 && price > maxPrice {
+						maxPrice = price
+					}
+				}
+			}
+		}
+		if maxPrice > 0 {
+			break // 如果第一个模式找到了，就停止
+		}
+	}
+	info.PriceMax = maxPrice
 
-	// 根据步长生成后续档位（最多生成5个乙组档位）
-	for _, s := range steps {
-		if lastLots >= s.limit {
+	// 3. 提取每手股数
+	// 匹配模式：100 H Shares 或 board lots of 100 或 每手100股
+	lotSizePatterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:board\s+lots?\s+of|每手)\s+(\d+)\s+(?:H\s+)?(?:Shares?|股)`),
+		regexp.MustCompile(`(?i)(\d+)\s+(?:H\s+)?Shares?\s+each`),
+		regexp.MustCompile(`(?i)minimum\s+of\s+(\d+)\s+(?:H\s+)?(?:Shares?|股)`),
+		regexp.MustCompile(`(?i)(\d+)\s+(?:H\s+)?Shares?`), // 匹配数字+Shares格式
+	}
+
+	for _, pattern := range lotSizePatterns {
+		match := pattern.FindStringSubmatch(text)
+		if len(match) > 1 {
+			if lotSize, err := strconv.Atoi(match[1]); err == nil {
+				info.LotSize = lotSize
+				break
+			}
+		}
+	}
+
+	// 如果没找到，默认港股通常是100
+	if info.LotSize == 0 {
+		info.LotSize = 100
+	}
+
+	// 4. 提取发售股数信息
+	extractOfferingInfo(text, &info)
+
+	// 5. 提取费用信息
+	extractFeesInfo(text, &info)
+
+	// 6. 提取申购阶梯表
+	info.SubscriptionTiers = extractSubscriptionTiers(text)
+
+	return info
+}
+
+// extractOfferingInfo 提取发售股数信息
+func extractOfferingInfo(text string, info *IPOInfo) {
+	// 匹配全球发售总股数
+	globalPattern := regexp.MustCompile(`(?i)(?:Number\s+of\s+Offer\s+Shares\s+under\s+the\s+Global\s+Offering|全球发售总股数)[:\s]+([\d,]+)\s+(?:H\s+)?Shares?`)
+	if match := globalPattern.FindStringSubmatch(text); len(match) > 1 {
+		globalStr := strings.ReplaceAll(match[1], ",", "")
+		if shares, err := strconv.ParseInt(globalStr, 10, 64); err == nil {
+			info.GlobalOffering = shares
+		}
+	}
+
+	// 匹配香港公开发售股数
+	hkPattern := regexp.MustCompile(`(?i)(?:Number\s+of\s+Hong\s+Kong\s+Offer\s+Shares|香港公开发售股数)[:\s]+([\d,]+)\s+(?:H\s+)?Shares?`)
+	if match := hkPattern.FindStringSubmatch(text); len(match) > 1 {
+		hkStr := strings.ReplaceAll(match[1], ",", "")
+		if shares, err := strconv.ParseInt(hkStr, 10, 64); err == nil {
+			info.HKPublicOffering = shares
+		}
+	}
+
+	// 匹配国际发售股数
+	intlPattern := regexp.MustCompile(`(?i)(?:Number\s+of\s+International\s+Offer\s+Shares|国际发售股数)[:\s]+([\d,]+)\s+(?:H\s+)?Shares?`)
+	if match := intlPattern.FindStringSubmatch(text); len(match) > 1 {
+		intlStr := strings.ReplaceAll(match[1], ",", "")
+		if shares, err := strconv.ParseInt(intlStr, 10, 64); err == nil {
+			info.InternationalOffering = shares
+		}
+	}
+}
+
+// extractFeesInfo 提取费用信息
+func extractFeesInfo(text string, info *IPOInfo) {
+	// 匹配经纪费
+	brokeragePattern := regexp.MustCompile(`(?i)(?:brokerage|经纪费)[\s:]+of\s+([\d.]+)%`)
+	if match := brokeragePattern.FindStringSubmatch(text); len(match) > 1 {
+		if fee, err := strconv.ParseFloat(match[1], 64); err == nil {
+			info.Fees.Brokerage = fee
+		}
+	}
+
+	// 匹配SFC交易征费
+	sfcPattern := regexp.MustCompile(`(?i)(?:SFC\s+transaction\s+levy|SFC交易征费)[\s:]+of\s+([\d.]+)%`)
+	if match := sfcPattern.FindStringSubmatch(text); len(match) > 1 {
+		if fee, err := strconv.ParseFloat(match[1], 64); err == nil {
+			info.Fees.SFCLevy = fee
+		}
+	}
+
+	// 匹配港交所交易费
+	exchangePattern := regexp.MustCompile(`(?i)(?:Hong\s+Kong\s+Stock\s+Exchange\s+trading\s+fee|港交所交易费)[\s:]+of\s+([\d.]+)%`)
+	if match := exchangePattern.FindStringSubmatch(text); len(match) > 1 {
+		if fee, err := strconv.ParseFloat(match[1], 64); err == nil {
+			info.Fees.ExchangeFee = fee
+		}
+	}
+
+	// 匹配AFRC交易征费
+	afrcPattern := regexp.MustCompile(`(?i)(?:AFRC\s+transaction\s+levy|AFRC交易征费)[\s:]+of\s+([\d.]+)%`)
+	if match := afrcPattern.FindStringSubmatch(text); len(match) > 1 {
+		if fee, err := strconv.ParseFloat(match[1], 64); err == nil {
+			info.Fees.AFRCLevy = fee
+		}
+	}
+}
+
+// extractSubscriptionTiers 从PDF文本中提取申购阶梯表
+func extractSubscriptionTiers(text string) []SubscriptionTier {
+	var tiers []SubscriptionTier
+
+	// 匹配表格数据：手数和金额对
+	// 模式1: 匹配 "100 23,898.62" 这样的格式（手数在前，金额在后，可能有逗号分隔）
+	// 需要匹配多列格式，每行可能有多个手数-金额对
+
+	// 先找到表格区域（通常在"NUMBER OF HONG KONG OFFER SHARES"附近）
+	tableStartPattern := regexp.MustCompile(`(?i)(?:NUMBER\s+OF\s+HONG\s+KONG\s+OFFER\s+SHARES|申购数量|申购手数)`)
+	tableEndPattern := regexp.MustCompile(`(?i)(?:APPLICATION\s+FOR\s+LISTING|申请上市|配售结果)`)
+
+	startIdx := -1
+	endIdx := len(text)
+
+	if match := tableStartPattern.FindStringIndex(text); match != nil {
+		startIdx = match[0]
+	}
+	if match := tableEndPattern.FindStringIndex(text); match != nil && match[0] > startIdx {
+		endIdx = match[0]
+	}
+
+	var tableText string
+	if startIdx >= 0 {
+		tableText = text[startIdx:endIdx]
+	} else {
+		tableText = text
+	}
+
+	// 匹配手数和金额对
+	// 模式：数字（手数） + 空格/换行 + HK$或数字（金额，可能带逗号）
+	// 需要匹配多种格式：
+	// 1. "100 23,898.62"
+	// 2. "1,000 238,986.11"
+	// 3. "705,100(1) 168,509,106.87"
+
+	// PDF提取时表格可能没有空格，需要匹配连续的数字对
+	// 格式可能是：10023,898.62 (实际上是 100 23,898.62)
+	// 或者：1,000238,986.11 (实际上是 1,000 238,986.11)
+
+	// 策略：找到所有可能的数字对，然后验证它们是否合理
+	// 手数模式：100, 200, 300, 1,000, 10,000, 100,000 等
+	// 金额模式：23,898.62, 238,986.11 等（通常有小数点后2位）
+
+	// 先尝试匹配有空格的情况
+	pairPattern1 := regexp.MustCompile(`(\d{1,3}(?:,\d{3})*)(?:\(1\))?\s+(\d{1,3}(?:,\d{3})*\.\d{2})`)
+	matches1 := pairPattern1.FindAllStringSubmatch(tableText, -1)
+
+	// 再尝试匹配无空格的情况（手数+金额连在一起）
+	// 手数可能是：100, 200, 1,000, 10,000, 100,000, 705,100
+	// 金额总是以小数点后2位结尾
+	pairPattern2 := regexp.MustCompile(`(\d{1,3}(?:,\d{3})*)(?:\(1\))?(\d{1,3}(?:,\d{3})*\.\d{2})`)
+	matches2 := pairPattern2.FindAllStringSubmatch(tableText, -1)
+
+	seen := make(map[int]bool) // 用于去重
+
+	// 处理有空格的情况
+	for _, match := range matches1 {
+		if len(match) < 3 {
 			continue
 		}
-		for i := lastLots + s.step; i <= s.limit && len(bLots) < 6; i += s.step {
-			bLots = append(bLots, i)
-			lastLots = i
-		}
-		if len(bLots) >= 6 {
-			break
-		}
+		processMatch(match, &tiers, seen)
 	}
 
-	// 分配乙组人数（指数衰减）
-	if len(bLots) > 1 {
-		totalWeight := 0.0
-		weights := make([]float64, len(bLots))
-		weights[0] = 1.0
-		totalWeight = 1.0
-		for i := 1; i < len(bLots); i++ {
-			weight := 1.0 / float64(i+1)
-			weights[i] = weight
-			totalWeight += weight
+	// 处理无空格的情况（需要更严格的验证）
+	for _, match := range matches2 {
+		if len(match) < 3 {
+			continue
 		}
+		// 验证：手数应该较小（通常<1000000），金额应该较大（通常>10000）
+		lotStr := strings.ReplaceAll(match[1], ",", "")
+		amountStr := strings.ReplaceAll(match[2], ",", "")
 
-		for i := 0; i < len(bLots); i++ {
-			var applicants int
-			if i == 0 {
-				applicants = bHeadApplicants
-			} else {
-				applicants = int(float64(bOtherApplicants) * weights[i] / (totalWeight - 1.0))
+		lots, err1 := strconv.Atoi(lotStr)
+		amount, err2 := strconv.ParseFloat(amountStr, 64)
+
+		if err1 == nil && err2 == nil {
+			// 验证合理性：手数<1000000，金额>10000，且金额/手数在合理范围内（100-500）
+			if lots >= 100 && lots < 1000000 && amount >= 10000 {
+				ratio := amount / float64(lots)
+				if ratio >= 100 && ratio <= 500 && !seen[lots] {
+					tiers = append(tiers, SubscriptionTier{
+						Lots:   lots,
+						Amount: amount,
+					})
+					seen[lots] = true
+				}
 			}
-			bTiers = append(bTiers, TierInfo{Lots: bLots[i], Applicants: applicants, Group: "乙组"})
 		}
-	} else {
-		bTiers = append(bTiers, TierInfo{Lots: bHead, Applicants: bHeadApplicants, Group: "乙组"})
 	}
 
-	// 合并所有档位
-	tiers = append(aTiers, bTiers...)
 	return tiers
 }
 
-// CalculateWinRates 计算各档位中签率（B机制，无回拨，优先一手原则）
-// 严格遵守港股IPO分配原则：
-// 1. 甲组优先一手原则：一手档优先分配，分配比例高于其他档位
-// 2. 中签率随档位上升而下降：档位越高，中签率（分配股数/申购股数）越低
-// 3. 中签人数 = 分配股数 / 每手股数（取整），不是申请人数*中签率
-func CalculateWinRates(tiers []TierInfo, publicOfferShares float64, lotSize int) []WinRateInfo {
-	var results []WinRateInfo
-
-	// B机制下：公開發售股數固定，无回拨
-	totalPublicShares := int64(publicOfferShares * 10000)
-	aGroupShares := totalPublicShares / 2 // 甲组分配股数
-	bGroupShares := totalPublicShares / 2 // 乙组分配股数
-
-	sharesPerLot := int64(lotSize)
-
-	// 分离甲组和乙组档位
-	var aGroupTiers, bGroupTiers []TierInfo
-	for _, tier := range tiers {
-		if tier.Group == "甲组" {
-			aGroupTiers = append(aGroupTiers, tier)
-		} else {
-			bGroupTiers = append(bGroupTiers, tier)
-		}
+// formatNumber 格式化数字，添加千位分隔符
+func formatNumber(n int64) string {
+	str := strconv.FormatInt(n, 10)
+	if len(str) <= 3 {
+		return str
 	}
 
-	// 计算甲组分配（优先一手原则）
-	aGroupResults := calculateAGroupAllocation(aGroupTiers, aGroupShares, sharesPerLot)
-
-	// 计算乙组分配（按比例分配，但中签率随档位下降）
-	bGroupResults := calculateBGroupAllocation(bGroupTiers, bGroupShares, sharesPerLot)
-
-	// 合并结果
-	results = append(results, aGroupResults...)
-	results = append(results, bGroupResults...)
-
-	return results
+	var result strings.Builder
+	for i, char := range str {
+		if i > 0 && (len(str)-i)%3 == 0 {
+			result.WriteString(",")
+		}
+		result.WriteRune(char)
+	}
+	return result.String()
 }
 
-// calculateAGroupAllocation 计算甲组分配（优先一手原则）
-// 优先一手原则：一手档优先分配，分配比例高于其他档位
-// 中签率随档位上升而下降：档位越高，中签率越低
-func calculateAGroupAllocation(tiers []TierInfo, totalShares int64, sharesPerLot int64) []WinRateInfo {
-	var results []WinRateInfo
-	if len(tiers) == 0 {
-		return results
+// processMatch 处理匹配结果并添加到tiers中
+func processMatch(match []string, tiers *[]SubscriptionTier, seen map[int]bool) {
+	if len(match) < 3 {
+		return
 	}
 
-	// 计算总申购股数
-	var totalSubscribed int64
-	for _, tier := range tiers {
-		totalSubscribed += tier.Lots * sharesPerLot * int64(tier.Applicants)
+	// 解析手数
+	lotStr := strings.ReplaceAll(match[1], ",", "")
+	lots, err := strconv.Atoi(lotStr)
+	if err != nil {
+		return
 	}
 
-	// 根据真实数据，先确定第一档（1手）的目标中签率，然后按比例确定其他档位的中签率
-	// 真实数据：1手2.00%，2手1.50%（75%），3手1.28%（64%），10手0.80%（40%）
-	// 使用幂函数拟合：winRate = baseRate * lots^(-beta)
-	// 1手：baseRate = 2.00%
-	// 2手：2.00% * 2^(-beta) = 1.50%，解得 beta ≈ 0.415
-	// 10手：2.00% * 10^(-beta) = 0.80%，验证：2.00% * 10^(-0.415) ≈ 0.80%
-	baseWinRate := 0.02 // 1手的目标中签率 2.00%
-	beta := 0.415       // 中签率衰减系数，根据真实数据拟合
-
-	// 第一步：计算每个档位的目标中签率
-	type TierTarget struct {
-		tier                  TierInfo
-		targetWinRate         float64
-		subscribedShares      int64
-		targetAllocatedShares int64
+	// 解析金额
+	amountStr := strings.ReplaceAll(match[2], ",", "")
+	amount, err := strconv.ParseFloat(amountStr, 64)
+	if err != nil {
+		return
 	}
 
-	var tierTargets []TierTarget
-	for _, tier := range tiers {
-		tierSubscribedShares := tier.Lots * sharesPerLot * int64(tier.Applicants)
-		// 计算目标中签率：winRate = baseRate * lots^(-beta)
-		targetWinRate := baseWinRate * math.Pow(float64(tier.Lots), -beta)
-		// 根据目标中签率和申购股数，计算目标分配股数
-		targetAllocatedShares := int64(float64(tierSubscribedShares) * targetWinRate)
-
-		tierTargets = append(tierTargets, TierTarget{
-			tier:                  tier,
-			targetWinRate:         targetWinRate,
-			subscribedShares:      tierSubscribedShares,
-			targetAllocatedShares: targetAllocatedShares,
-		})
-	}
-
-	// 第二步：计算总目标分配股数
-	var totalTargetAllocated int64
-	for _, tt := range tierTargets {
-		totalTargetAllocated += tt.targetAllocatedShares
-	}
-
-	// 第三步：如果总目标分配股数超过总股数，按比例缩减
-	var scaleFactor float64 = 1.0
-	if totalTargetAllocated > totalShares {
-		scaleFactor = float64(totalShares) / float64(totalTargetAllocated)
-	}
-
-	// 第四步：按比例分配股数，并计算中签率和中签人数
-	for _, tt := range tierTargets {
-		allocatedShares := int64(float64(tt.targetAllocatedShares) * scaleFactor)
-
-		// 确保每个档位至少分配1手，保证有人中签
-		if allocatedShares < sharesPerLot && tt.tier.Applicants > 0 {
-			allocatedShares = sharesPerLot
-		}
-
-		// 计算实际中签率
-		winRate := float64(allocatedShares) / float64(tt.subscribedShares)
-
-		// 计算中签人数和中签手数
-		var winApplicants int
-		var allocatedLots int64
-
-		if tt.tier.Applicants > 0 && allocatedShares > 0 {
-			avgAllocatedSharesPerApplicant := float64(allocatedShares) / float64(tt.tier.Applicants)
-			avgAllocatedLotsPerApplicant := avgAllocatedSharesPerApplicant / float64(sharesPerLot)
-
-			if avgAllocatedLotsPerApplicant >= 1.0 {
-				winApplicants = tt.tier.Applicants
-				allocatedLots = int64(avgAllocatedLotsPerApplicant)
-				if allocatedLots > int64(tt.tier.Lots) {
-					allocatedLots = int64(tt.tier.Lots)
-				}
-			} else {
-				winApplicants = int(allocatedShares / sharesPerLot)
-				if winApplicants > tt.tier.Applicants {
-					winApplicants = tt.tier.Applicants
-				}
-				if winApplicants == 0 && allocatedShares >= sharesPerLot {
-					winApplicants = 1
-				}
-				if winApplicants > 0 {
-					allocatedLots = 1
-				}
-			}
-		}
-
-		lotDistribution := formatLotDistribution(allocatedShares, winApplicants, sharesPerLot, tt.tier.Lots)
-		results = append(results, WinRateInfo{
-			Lots:             tt.tier.Lots,
-			Applicants:       tt.tier.Applicants,
-			Group:            "甲组",
-			SubscribedShares: tt.subscribedShares,
-			AllocatedShares:  allocatedShares,
-			WinRate:          winRate,
-			WinApplicants:    winApplicants,
-			AllocatedLots:    allocatedLots,
-			LotDistribution:  lotDistribution,
-		})
-	}
-
-	return results
-}
-
-// calculateBGroupAllocation 计算乙组分配（按比例分配，但中签率随档位下降）
-func calculateBGroupAllocation(tiers []TierInfo, totalShares int64, sharesPerLot int64) []WinRateInfo {
-	var results []WinRateInfo
-	if len(tiers) == 0 {
-		return results
-	}
-
-	// 根据真实数据，乙组的中签率更低，且随档位下降
-	// 真实数据：40000手0.20%，50000手0.18%
-	// 使用幂函数拟合：winRate = baseRate * lots^(-beta)
-	// 找到乙组最低档位作为基准
-	var minLots int64 = 999999
-	for _, tier := range tiers {
-		if tier.Lots < minLots {
-			minLots = tier.Lots
+	// 验证合理性：手数应该在100-1000000之间，金额应该在10000-100000000之间
+	if lots >= 100 && lots <= 1000000 && amount >= 10000 && amount <= 100000000 {
+		// 去重：如果手数已存在，跳过
+		if !seen[lots] {
+			*tiers = append(*tiers, SubscriptionTier{
+				Lots:   lots,
+				Amount: amount,
+			})
+			seen[lots] = true
 		}
 	}
-
-	// 根据真实数据，40000手0.20%，50000手0.18%
-	// 40000手：baseRate = 0.20%
-	// 50000手：0.20% * (50000/40000)^(-beta) = 0.18%，解得 beta ≈ 0.2
-	baseWinRate := 0.002 // 乙组首档的目标中签率 0.20%
-	beta := 0.2          // 中签率衰减系数，乙组衰减较慢
-
-	// 计算每个档位的目标中签率
-	type TierTarget struct {
-		tier                  TierInfo
-		targetWinRate         float64
-		subscribedShares      int64
-		targetAllocatedShares int64
-	}
-
-	var tierTargets []TierTarget
-	for _, tier := range tiers {
-		tierSubscribedShares := tier.Lots * sharesPerLot * int64(tier.Applicants)
-		// 计算目标中签率：winRate = baseRate * (lots/minLots)^(-beta)
-		targetWinRate := baseWinRate * math.Pow(float64(tier.Lots)/float64(minLots), -beta)
-		// 根据目标中签率和申购股数，计算目标分配股数
-		targetAllocatedShares := int64(float64(tierSubscribedShares) * targetWinRate)
-
-		tierTargets = append(tierTargets, TierTarget{
-			tier:                  tier,
-			targetWinRate:         targetWinRate,
-			subscribedShares:      tierSubscribedShares,
-			targetAllocatedShares: targetAllocatedShares,
-		})
-	}
-
-	// 计算总目标分配股数
-	var totalTargetAllocated int64
-	for _, tt := range tierTargets {
-		totalTargetAllocated += tt.targetAllocatedShares
-	}
-
-	// 如果总目标分配股数超过总股数，按比例缩减
-	var scaleFactor float64 = 1.0
-	if totalTargetAllocated > totalShares {
-		scaleFactor = float64(totalShares) / float64(totalTargetAllocated)
-	}
-
-	// 按比例分配股数，并计算中签率和中签人数
-	for _, tt := range tierTargets {
-		allocatedShares := int64(float64(tt.targetAllocatedShares) * scaleFactor)
-
-		// 确保每个档位至少分配1手，保证有人中签
-		if allocatedShares < sharesPerLot && tt.tier.Applicants > 0 {
-			allocatedShares = sharesPerLot
-		}
-
-		// 计算实际中签率
-		winRate := float64(allocatedShares) / float64(tt.subscribedShares)
-
-		// 计算中签人数和中签手数
-		var winApplicants int
-		var allocatedLots int64
-
-		if tt.tier.Applicants > 0 && allocatedShares > 0 {
-			avgAllocatedSharesPerApplicant := float64(allocatedShares) / float64(tt.tier.Applicants)
-			avgAllocatedLotsPerApplicant := avgAllocatedSharesPerApplicant / float64(sharesPerLot)
-
-			if avgAllocatedLotsPerApplicant >= 1.0 {
-				winApplicants = tt.tier.Applicants
-				allocatedLots = int64(avgAllocatedLotsPerApplicant)
-				if allocatedLots > int64(tt.tier.Lots) {
-					allocatedLots = int64(tt.tier.Lots)
-				}
-			} else {
-				winApplicants = int(allocatedShares / sharesPerLot)
-				if winApplicants > tt.tier.Applicants {
-					winApplicants = tt.tier.Applicants
-				}
-				if winApplicants == 0 && allocatedShares >= sharesPerLot {
-					winApplicants = 1
-				}
-				if winApplicants > 0 {
-					allocatedLots = 1
-				}
-			}
-		}
-
-		lotDistribution := formatLotDistribution(allocatedShares, winApplicants, sharesPerLot, tt.tier.Lots)
-		results = append(results, WinRateInfo{
-			Lots:             tt.tier.Lots,
-			Applicants:       tt.tier.Applicants,
-			Group:            "乙组",
-			SubscribedShares: tt.subscribedShares,
-			AllocatedShares:  allocatedShares,
-			WinRate:          winRate,
-			WinApplicants:    winApplicants,
-			AllocatedLots:    allocatedLots,
-			LotDistribution:  lotDistribution,
-		})
-	}
-
-	return results
 }
 
 func main() {
-	aTail, bHead := getValidLots(currentIPO.PriceMax, currentIPO.LotSize)
-	oneLotPrice := currentIPO.PriceMax * float64(currentIPO.LotSize)
-	bGroupApplicants := currentIPO.BGroupApplicants
-	if bGroupApplicants == 0 && currentIPO.TotalApplicants > 0 {
-		bGroupApplicants = int(float64(currentIPO.TotalApplicants) * 0.05)
+	// 支持命令行参数指定PDF文件，默认读取a.pdf
+	pdfPath := "b.pdf"
+	if len(os.Args) > 1 {
+		pdfPath = os.Args[1]
 	}
-	oneLotRate := currentIPO.OneLotRate
-	if oneLotRate == 0 {
-		oneLotRate = 0.40
-	}
-	aTailRate := currentIPO.ATailRate
-	if aTailRate == 0 {
-		aTailRate = 0.02
-	}
-	bHeadRate := currentIPO.BHeadRate
-	if bHeadRate == 0 {
-		bHeadRate = 0.03
-	}
-	fmt.Println("==================================================")
-	fmt.Printf("🔍 自动推算申购阶梯: %s\n", currentIPO.StockName)
-	fmt.Println("==================================================")
-	fmt.Printf("🏠 [甲组末档 - 甲尾]\n   申购手数: %d 手\n   申购金额: %.2f HKD\n", aTail, float64(aTail)*oneLotPrice)
-	fmt.Println("--------------------------------------------------")
-	fmt.Printf("🚀 [乙组首档 - 乙头]\n   申购手数: %d 手\n   申购金额: %.2f HKD\n", bHead, float64(bHead)*oneLotPrice)
-	fmt.Println("==================================================")
-	if currentIPO.TotalApplicants > 0 {
-		// 推算所有档位人数
-		tiers := EstimateAllTiers(currentIPO.TotalApplicants, currentIPO.BGroupApplicants, oneLotRate, aTailRate, bHeadRate, aTail, bHead)
 
-		// 计算并显示各档位中签率
-		winRates := CalculateWinRates(tiers, currentIPO.PublicOfferShares, currentIPO.LotSize)
-		fmt.Println("🎯 各档位中签率预测 (B机制，无回拨，优先一手原则):")
-		fmt.Println("--------------------------------------------------")
-		fmt.Println("【甲组】")
-		for _, wr := range winRates {
-			if wr.Group == "甲组" {
-				shares := wr.Lots * int64(currentIPO.LotSize)
-				if wr.WinApplicants > 0 {
-					fmt.Printf("   %d手（%d股）: 中签率 %.4f%%, 申请人数 %d人, 中签人数 %d人, 中签手数 %s\n", wr.Lots, shares, wr.WinRate*100, wr.Applicants, wr.WinApplicants, wr.LotDistribution)
-				} else {
-					fmt.Printf("   %d手（%d股）: 中签率 %.4f%%, 申请人数 %d人, 中签人数 0人, 中签手数 无人中签\n", wr.Lots, shares, wr.WinRate*100, wr.Applicants)
-				}
-			}
+	// 检查文件是否存在
+	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
+		fmt.Printf("错误: 文件 %s 不存在\n", pdfPath)
+		fmt.Println("用法: go run main.go [PDF文件路径]")
+		os.Exit(1)
+	}
+
+	// 打开PDF文件
+	file, reader, err := pdf.Open(pdfPath)
+	if err != nil {
+		fmt.Printf("错误: 无法打开PDF文件: %v\n", err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
+	// 获取PDF信息
+	totalPages := reader.NumPage()
+	fmt.Println("==================================================")
+	fmt.Printf("📄 PDF文件: %s\n", pdfPath)
+	fmt.Printf("📊 总页数: %d 页\n", totalPages)
+	fmt.Println("==================================================")
+
+	// 读取前几页（通常关键信息在前5页，申购阶梯表也在前几页）
+	var allText strings.Builder
+	pagesToRead := totalPages
+	if pagesToRead > 10 {
+		pagesToRead = 10 // 读取前10页以确保包含申购阶梯表
+	}
+
+	for i := 1; i <= pagesToRead; i++ {
+		page := reader.Page(i)
+		if page.V.IsNull() {
+			continue
 		}
-		fmt.Println("--------------------------------------------------")
-		fmt.Println("【乙组】")
-		for _, wr := range winRates {
-			if wr.Group == "乙组" {
-				shares := wr.Lots * int64(currentIPO.LotSize)
-				if wr.WinApplicants > 0 {
-					fmt.Printf("   %d手（%d股）: 中签率 %.4f%%, 申请人数 %d人, 中签人数 %d人, 中签手数 %s\n", wr.Lots, shares, wr.WinRate*100, wr.Applicants, wr.WinApplicants, wr.LotDistribution)
-				} else {
-					fmt.Printf("   %d手（%d股）: 中签率 %.4f%%, 申请人数 %d人, 中签人数 0人, 中签手数 无人中签\n", wr.Lots, shares, wr.WinRate*100, wr.Applicants)
-				}
-			}
+
+		// 提取文本内容
+		text, err := page.GetPlainText(nil)
+		if err != nil {
+			continue
 		}
+
+		text = strings.TrimSpace(text)
+		if text != "" {
+			allText.WriteString(text + "\n")
+		}
+	}
+
+	// 提取IPO信息
+	fullText := allText.String()
+	ipoInfo := extractIPOInfo(fullText)
+
+	// 打印提取的信息
+	fmt.Println("\n🎯 提取的IPO信息:")
+	fmt.Println("==================================================")
+	fmt.Printf("股票名称: %s\n", ipoInfo.StockName)
+	fmt.Printf("最高发行价: HK$%.2f\n", ipoInfo.PriceMax)
+	fmt.Printf("每手股数: %d\n", ipoInfo.LotSize)
+
+	if ipoInfo.GlobalOffering > 0 {
+		fmt.Printf("全球发售总股数: %s H Shares\n", formatNumber(ipoInfo.GlobalOffering))
+	}
+	if ipoInfo.HKPublicOffering > 0 {
+		fmt.Printf("香港公开发售股数: %s H Shares\n", formatNumber(ipoInfo.HKPublicOffering))
+	}
+	if ipoInfo.InternationalOffering > 0 {
+		fmt.Printf("国际发售股数: %s H Shares\n", formatNumber(ipoInfo.InternationalOffering))
+	}
+
+	if ipoInfo.Fees.Brokerage > 0 || ipoInfo.Fees.SFCLevy > 0 || ipoInfo.Fees.ExchangeFee > 0 || ipoInfo.Fees.AFRCLevy > 0 {
+		fmt.Println("\n费用信息:")
+		if ipoInfo.Fees.Brokerage > 0 {
+			fmt.Printf("  经纪费: %.4f%%\n", ipoInfo.Fees.Brokerage)
+		}
+		if ipoInfo.Fees.SFCLevy > 0 {
+			fmt.Printf("  SFC交易征费: %.4f%%\n", ipoInfo.Fees.SFCLevy)
+		}
+		if ipoInfo.Fees.ExchangeFee > 0 {
+			fmt.Printf("  港交所交易费: %.4f%%\n", ipoInfo.Fees.ExchangeFee)
+		}
+		if ipoInfo.Fees.AFRCLevy > 0 {
+			fmt.Printf("  AFRC交易征费: %.4f%%\n", ipoInfo.Fees.AFRCLevy)
+		}
+	}
+
+	fmt.Printf("\n申购阶梯表: %d 条记录\n", len(ipoInfo.SubscriptionTiers))
+	fmt.Println("==================================================")
+
+	// 打印申购阶梯表（按手数排序）
+	if len(ipoInfo.SubscriptionTiers) > 0 {
+		// 按手数排序
+		sort.Slice(ipoInfo.SubscriptionTiers, func(i, j int) bool {
+			return ipoInfo.SubscriptionTiers[i].Lots < ipoInfo.SubscriptionTiers[j].Lots
+		})
+
+		fmt.Println("\n📊 申购阶梯表:")
+		fmt.Println("==================================================")
+		fmt.Printf("%-12s %-25s\n", "申购手数", "应付金额(HK$)")
+		fmt.Println("--------------------------------------------------")
+		for _, tier := range ipoInfo.SubscriptionTiers {
+			fmt.Printf("%-12d %-25.2f\n", tier.Lots, tier.Amount)
+		}
+		fmt.Println("==================================================")
+	}
+
+	// 打印结构体（便于程序使用）
+	fmt.Println("\n📋 结构体数据:")
+	fmt.Println("==================================================")
+	fmt.Printf("var currentIPO = struct {\n")
+	fmt.Printf("\tStockName         string  // 股票名称（含代码）\n")
+	fmt.Printf("\tPriceMax          float64 // 最高发行价（HKD）\n")
+	fmt.Printf("\tLotSize           int     // 每手股数\n")
+	if ipoInfo.GlobalOffering > 0 || ipoInfo.HKPublicOffering > 0 || ipoInfo.InternationalOffering > 0 {
+		fmt.Printf("\tGlobalOffering    int64   // 全球发售总股数\n")
+		fmt.Printf("\tHKPublicOffering  int64   // 香港公开发售股数\n")
+		fmt.Printf("\tInternationalOffering int64 // 国际发售股数\n")
+	}
+	if ipoInfo.Fees.Brokerage > 0 || ipoInfo.Fees.SFCLevy > 0 || ipoInfo.Fees.ExchangeFee > 0 || ipoInfo.Fees.AFRCLevy > 0 {
+		fmt.Printf("\tFees              struct {\n")
+		fmt.Printf("\t\tBrokerage   float64 // 经纪费 (%%)\n")
+		fmt.Printf("\t\tSFCLevy     float64 // SFC交易征费 (%%)\n")
+		fmt.Printf("\t\tExchangeFee float64 // 港交所交易费 (%%)\n")
+		fmt.Printf("\t\tAFRCLevy    float64 // AFRC交易征费 (%%)\n")
+		fmt.Printf("\t}\n")
+	}
+	fmt.Printf("}{\n")
+	fmt.Printf("\tStockName: \"%s\",\n", ipoInfo.StockName)
+	fmt.Printf("\tPriceMax:  %.2f,\n", ipoInfo.PriceMax)
+	fmt.Printf("\tLotSize:   %d,\n", ipoInfo.LotSize)
+	if ipoInfo.GlobalOffering > 0 {
+		fmt.Printf("\tGlobalOffering:   %d,\n", ipoInfo.GlobalOffering)
+	}
+	if ipoInfo.HKPublicOffering > 0 {
+		fmt.Printf("\tHKPublicOffering: %d,\n", ipoInfo.HKPublicOffering)
+	}
+	if ipoInfo.InternationalOffering > 0 {
+		fmt.Printf("\tInternationalOffering: %d,\n", ipoInfo.InternationalOffering)
+	}
+	if ipoInfo.Fees.Brokerage > 0 || ipoInfo.Fees.SFCLevy > 0 || ipoInfo.Fees.ExchangeFee > 0 || ipoInfo.Fees.AFRCLevy > 0 {
+		fmt.Printf("\tFees: struct {\n")
+		fmt.Printf("\t\tBrokerage   float64\n")
+		fmt.Printf("\t\tSFCLevy     float64\n")
+		fmt.Printf("\t\tExchangeFee float64\n")
+		fmt.Printf("\t\tAFRCLevy    float64\n")
+		fmt.Printf("\t}{\n")
+		if ipoInfo.Fees.Brokerage > 0 {
+			fmt.Printf("\t\tBrokerage:   %.4f,\n", ipoInfo.Fees.Brokerage)
+		}
+		if ipoInfo.Fees.SFCLevy > 0 {
+			fmt.Printf("\t\tSFCLevy:     %.4f,\n", ipoInfo.Fees.SFCLevy)
+		}
+		if ipoInfo.Fees.ExchangeFee > 0 {
+			fmt.Printf("\t\tExchangeFee: %.4f,\n", ipoInfo.Fees.ExchangeFee)
+		}
+		if ipoInfo.Fees.AFRCLevy > 0 {
+			fmt.Printf("\t\tAFRCLevy:    %.4f,\n", ipoInfo.Fees.AFRCLevy)
+		}
+		fmt.Printf("\t},\n")
+	}
+	fmt.Printf("}\n")
+	fmt.Println("--------------------------------------------------")
+
+	// 打印申购阶梯表结构体（已排序）
+	if len(ipoInfo.SubscriptionTiers) > 0 {
+		fmt.Println("\n📋 申购阶梯表结构体:")
+		fmt.Println("--------------------------------------------------")
+		fmt.Printf("type SubscriptionTier struct {\n")
+		fmt.Printf("\tLots   int     // 申购手数\n")
+		fmt.Printf("\tAmount float64 // 应付金额（HK$）\n")
+		fmt.Printf("}\n\n")
+		fmt.Printf("var subscriptionTiers = []SubscriptionTier{\n")
+		for _, tier := range ipoInfo.SubscriptionTiers {
+			fmt.Printf("\t{Lots: %d, Amount: %.2f},\n", tier.Lots, tier.Amount)
+		}
+		fmt.Printf("}\n")
 		fmt.Println("==================================================")
 	}
 }
