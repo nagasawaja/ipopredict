@@ -1,0 +1,98 @@
+{{define "list_body"}}
+<div class="row" style="justify-content: space-between; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+  <span class="muted">股票列表 共 {{.Total}} 条</span>
+  <form method="GET" action="/" class="row" style="margin: 0; flex-wrap: wrap; gap: 6px; align-items: center;">
+    <input type="text" name="q" value="{{.Query}}" placeholder="代码/名称" style="width: 100px;"/>
+    <label class="muted" style="font-size: 12px;">中介</label>
+    <select name="role" style="padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px;">
+      <option value="">全部</option>
+      <option value="sponsor" {{if eq .Role "sponsor"}}selected{{end}}>sponsor（保薦人）</option>
+      <option value="underwriter" {{if eq .Role "underwriter"}}selected{{end}}>underwriter（包銷商）</option>
+      <option value="bookrunner" {{if eq .Role "bookrunner"}}selected{{end}}>bookrunner（賬簿管理人）</option>
+      <option value="global_coordinator" {{if eq .Role "global_coordinator"}}selected{{end}}>global_coordinator（全球協調人）</option>
+    </select>
+    {{if .IntermediaryOptions}}
+    <select name="intermediary" style="padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; min-width: 120px;">
+      <option value="">— 选公司 —</option>
+      {{range .IntermediaryOptions}}
+      <option value="{{.}}" {{if eq $.Intermediary .}}selected{{end}}>{{.}}</option>
+      {{end}}
+    </select>
+    {{else}}
+    <input type="text" name="intermediary" value="{{.Intermediary}}" placeholder="机构名称" style="width: 100px;"/>
+    {{end}}
+    <label class="muted" style="font-size: 12px;">首日</label>
+    <select name="first_day" style="padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px;">
+      <option value="">全部</option>
+      <option value="up" {{if eq .FirstDay "up"}}selected{{end}}>上升</option>
+      <option value="down" {{if eq .FirstDay "down"}}selected{{end}}>下跌</option>
+    </select>
+    {{if or (eq .FirstDay "up") (eq .FirstDay "down")}}
+    <input type="text" name="first_day_val" value="{{.FirstDayVal}}" placeholder="幅度%" style="width: 60px;"/>
+    {{end}}
+    <input type="hidden" name="orderBy" value="{{.OrderBy}}"/>
+    <input type="hidden" name="order" value="{{.Order}}"/>
+    <input type="number" name="pageSize" value="{{.PageSize}}" min="1" max="200" style="width: 50px;"/>
+    <button type="submit">查询</button>
+  </form>
+</div>
+
+<div style="overflow-x: auto;">
+<table class="table">
+  <thead>
+    <tr>
+      <th>代码</th>
+      <th class="wrap name-col">名称</th>
+      <th>上市日</th>
+      <th>招股期</th>
+      <th>发行价</th>
+      <th class="num">一手</th>
+      <th class="num">入场费</th>
+      <th class="num">募资</th>
+      <th class="num">市值</th>
+      <th class="num">PE</th>
+      <th class="num">申请人数</th>
+      <th class="num"><a href="{{.OneLotWinRateSortURL}}" style="color: inherit;">中签率{{if eq .OrderBy "one_lot_win_rate_pct"}}{{if eq .Order "asc"}} ▲{{else}} ▼{{end}}{{end}}</a></th>
+      <th class="num">认购倍数</th>
+      <th class="num">首日%</th>
+      <th class="num">累计%</th>
+      <th>招股书</th>
+      <th>更新</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Rows}}
+    <tr>
+      <td class="code"><a href="/stocks/{{.StockCode}}">{{.StockCode}}</a></td>
+      <td class="wrap name-col">{{.StockName}}</td>
+      <td>{{fmtNullTime .ListDate}}</td>
+      <td>{{fmtDateRange .ApplyStartDate .ApplyEndDate}}</td>
+      <td class="num">{{fmtNullFloat .OfferPriceLow 2}}~{{fmtNullFloat .OfferPriceHigh 2}}{{if .OfferPrice.Valid}} ({{fmtNullFloat .OfferPrice 2}}){{end}}</td>
+      <td class="num">{{fmtNullInt64 .LotSize}}</td>
+      <td class="num">{{fmtNullFloat .AdmissionFeeHkd 0}}</td>
+      <td class="num">{{if .RaiseMoneyText.Valid}}{{.RaiseMoneyText.String}}{{else}}{{fmtNullFloat .RaiseMoneyHkd 0}}{{end}}</td>
+      <td class="num">{{fmtNullFloat .MarketCapHkd 0}}</td>
+      <td class="num">{{fmtNullFloat .Pe 2}}</td>
+      <td class="num">{{fmtNullInt64 .Applicants}}</td>
+      <td class="num">{{fmtNullFloat .OneLotWinRatePct 2}}</td>
+      <td class="num">{{fmtNullFloat .SubscriptionMultiple 2}}</td>
+      <td class="num">{{fmtNullFloat .FirstDayIncrRatePct 2}}</td>
+      <td class="num">{{fmtNullFloat .TotalIncrRatePct 2}}</td>
+      <td>{{if .ProspectusUrl.Valid}}<a href="{{.ProspectusUrl.String}}" target="_blank" rel="noreferrer">PDF</a>{{else}}-{{end}}</td>
+      <td>{{.UpdatedAt.Format "01-02 15:04"}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+
+<div class="pager">
+  <span>第 {{.Page}} 页 · 每页 {{.PageSize}}</span>
+  <span>
+    {{if .PrevURL}}<a class="btnlink" href="{{.PrevURL}}">上一页</a>{{end}}
+    {{if .NextURL}}<a class="btnlink" href="{{.NextURL}}">下一页</a>{{end}}
+  </span>
+</div>
+{{end}}
+
+{{define "list.html"}}{{template "layout_list" .}}{{end}}

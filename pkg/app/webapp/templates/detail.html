@@ -1,0 +1,260 @@
+{{define "detail_body"}}
+<div class="row" style="justify-content: space-between;">
+  <div>
+    <div style="font-size: 18px; font-weight: 800;" class="code">{{.D.Stock.StockCode}} {{.D.Stock.StockName}}</div>
+    <div class="muted code">{{.D.Stock.HkSymbol}}</div>
+  </div>
+<div class="row">
+    <a class="btnlink" href="/">返回列表</a>
+  </div>
+</div>
+
+{{if .D.AllotmentSummary}}
+<div class="section">
+  <h3>配售摘要</h3>
+  <div class="kvs">
+    <div class="k">申请人数</div><div class="v code">{{.D.AllotmentSummary.Applicants}}</div>
+    <div class="k">甲组人数</div><div class="v code">{{.D.GroupACount}}</div>
+    <div class="k">乙组人数</div><div class="v code">{{.D.GroupBCount}}</div>
+    <div class="k">一手中签率(%)</div><div class="v code">{{.D.AllotmentSummary.OneLotWinRatePct}}</div>
+    <div class="k">最大手数</div><div class="v code">{{.D.AllotmentSummary.MaxLots}}</div>
+    <div class="k">定价</div><div class="v code">{{.D.AllotmentSummary.OfferPriceLow}} ~ {{.D.AllotmentSummary.OfferPriceHigh}} ({{.D.AllotmentSummary.OfferPrice}})</div>
+    <div class="k">认购倍数</div><div class="v code">{{.D.AllotmentSummary.SubscriptionMultiple}}</div>
+    <div class="k">回拨比例(%)</div><div class="v code">{{.D.AllotmentSummary.ClawbackRatePct}}</div>
+    <div class="k">公告链接</div><div class="v">{{if .D.AllotmentSummary.AnnouncementUrl}}<a href="{{.D.AllotmentSummary.AnnouncementUrl}}" target="_blank" rel="noreferrer">{{.D.AllotmentSummary.AnnouncementUrl}}</a>{{else}}-{{end}}</div>
+  </div>
+</div>
+{{end}}
+
+{{if .D.AllotmentTiers}}
+<div class="section">
+  <h3>配售档位</h3>
+  <table class="table">
+    <thead>
+      <tr>
+        <th style="width: 56px;">序号</th>
+        <th style="width: 110px;">认购数量</th>
+        <th style="width: 96px;">申请人数</th>
+        <th style="width: 96px;">中签数</th>
+        <th style="width: 96px;">中签率</th>
+        <th style="width: 110px;">每户中签</th>
+        <th>备注</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .D.AllotmentTiers}}
+      <tr>
+        <td class="code">{{.Seq}}</td>
+        <td class="code">
+          {{if eq .GroupCode "A"}}<span class="grp-chip grp-a">甲</span>{{else if eq .GroupCode "B"}}<span class="grp-chip grp-b">乙</span>{{else}}{{.GroupCode}}{{end}} {{.Lots}}
+        </td>
+        <td class="code">{{.Applicants}}</td>
+        <td class="code">{{.WinLots}}手</td>
+        <td class="code">{{fmtPctTrunc2 .WinRatePct}}</td>
+        <td class="code">{{fmtPctTrunc2 .HouseholdWinRatePct}}</td>
+        <td>{{.Remark}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+<div class="section">
+  <h3>基础信息</h3>
+  <div class="kvs">
+    <div class="k">Stock ID</div><div class="v code">{{.D.Stock.ID}}</div>
+    <div class="k">参考公司</div><div class="v">{{if .D.Stock.ReferenceCompany}}{{.D.Stock.ReferenceCompany}}{{else}}-{{end}}</div>
+    <div class="k">数据源</div><div class="v"><span class="chip">{{.D.Stock.SourceProvider}}</span></div>
+    <div class="k">请求参数</div><div class="v code">{{if .D.Stock.SourceRequestSymbol}}{{.D.Stock.SourceRequestSymbol}}{{else}}-{{end}}</div>
+    <div class="k">来源 URL</div><div class="v">{{if .D.Stock.SourceUrl}}<a href="{{.D.Stock.SourceUrl}}" target="_blank" rel="noreferrer">{{.D.Stock.SourceUrl}}</a>{{else}}-{{end}}</div>
+    <div class="k">抓取时间</div><div class="v code">{{fmtUnix .D.Stock.SourceFetchedAt}}</div>
+    <div class="k">创建时间</div><div class="v code">{{.D.Stock.CreatedAt.Format "2006-01-02 15:04:05"}}</div>
+    <div class="k">更新时间</div><div class="v code">{{.D.Stock.UpdatedAt.Format "2006-01-02 15:04:05"}}</div>
+  </div>
+</div>
+
+{{if .D.Offering}}
+<div class="section">
+  <h3>发行信息</h3>
+  <div class="kvs">
+    <div class="k">招股期</div><div class="v">{{fmtTime .D.Offering.ApplyStartDate}} → {{fmtTime .D.Offering.ApplyEndDate}}</div>
+    <div class="k">上市日</div><div class="v">{{fmtTime .D.Offering.ListDate}}</div>
+    <div class="k">发行价</div><div class="v code">{{.D.Offering.OfferPriceLow}} ~ {{.D.Offering.OfferPriceHigh}} ({{.D.Offering.OfferPrice}})</div>
+    <div class="k">一手股数</div><div class="v code">{{.D.Offering.LotSize}}</div>
+    <div class="k">全球发售股数</div><div class="v code">{{fmtInt64Comma .D.Offering.GlobalOfferShares}}</div>
+    <div class="k">公开发售股数</div><div class="v code">{{fmtInt64Comma .D.Offering.PublicOfferShares}}</div>
+    <div class="k">国际发售股数</div><div class="v code">{{fmtInt64Comma .D.Offering.InternationalOfferShares}}</div>
+    <div class="k">入场费(HKD)</div><div class="v code">{{fmtFloatComma .D.Offering.AdmissionFeeHkd 2}}</div>
+    <div class="k">市值(HKD)</div><div class="v code">{{fmtFloatComma .D.Offering.MarketCapHkd 0}}</div>
+    <div class="k">市盈率(PE)</div><div class="v code">{{.D.Offering.Pe}}</div>
+    <div class="k">招股书</div><div class="v">{{if .D.Offering.ProspectusUrl}}<a href="{{.D.Offering.ProspectusUrl}}" target="_blank" rel="noreferrer">{{.D.Offering.ProspectusUrl}}</a>{{else}}-{{end}}</div>
+  </div>
+</div>
+{{end}}
+
+{{if .D.RaiseMoney}}
+<div class="section">
+  <h3>募资</h3>
+  <div class="kvs">
+    <div class="k">金额</div><div class="v">{{if .D.RaiseMoney.AmountText}}{{.D.RaiseMoney.AmountText}}{{else}}-{{end}}</div>
+    <div class="k">金额(HKD)</div><div class="v code">{{if .D.RaiseMoney.AmountHkd}}{{fmtFloatComma .D.RaiseMoney.AmountHkd 0}}{{else}}-{{end}}</div>
+  </div>
+</div>
+{{end}}
+
+{{if .D.Company}}
+<div class="section">
+  <h3>公司信息</h3>
+  <div class="kvs">
+    <div class="k">地址</div><div class="v">{{if .D.Company.Address}}{{.D.Company.Address}}{{else}}-{{end}}</div>
+    <div class="k">过户登记处</div><div class="v">{{if .D.Company.Registrar}}{{.D.Company.Registrar}}{{else}}-{{end}}</div>
+    <div class="k">过户登记处电话</div><div class="v">{{if .D.Company.RegistrarPhone}}{{.D.Company.RegistrarPhone}}{{else}}-{{end}}</div>
+    <div class="k">主席</div><div class="v">{{if .D.Company.Chairman}}{{.D.Company.Chairman}}{{else}}-{{end}}</div>
+    <div class="k">电话</div><div class="v">{{if .D.Company.Phone}}{{.D.Company.Phone}}{{else}}-{{end}}</div>
+    <div class="k">主营</div><div class="v">{{if .D.Company.Business}}{{.D.Company.Business}}{{else}}-{{end}}</div>
+  </div>
+</div>
+{{end}}
+
+{{if .D.GreenShoe}}
+<div class="section">
+  <h3>绿鞋</h3>
+  <div class="kvs">
+    <div class="k">比例(%)</div><div class="v code">{{.D.GreenShoe.RatePct}}</div>
+    <div class="k">股数</div><div class="v code">{{.D.GreenShoe.AmountShares}}</div>
+    <div class="k">文本</div><div class="v">{{if .D.GreenShoe.AmountText}}{{.D.GreenShoe.AmountText}}{{else}}-{{end}}</div>
+  </div>
+</div>
+{{end}}
+
+{{if .D.GreyMarket}}
+<div class="section">
+  <h3>暗盘 / Grey Market</h3>
+  <div class="kvs">
+    <div class="k">日期</div><div class="v">{{fmtTime .D.GreyMarket.GreyDate}}</div>
+    <div class="k">升幅(%)</div><div class="v code">{{.D.GreyMarket.IncrRatePct}}</div>
+    <div class="k">升幅2(%)</div><div class="v code">{{.D.GreyMarket.IncrRatePct2}}</div>
+  </div>
+</div>
+{{end}}
+
+{{if .D.Performance}}
+<div class="section">
+  <h3>表现</h3>
+  <div class="kvs">
+    <div class="k">首日升幅(%)</div><div class="v code">{{.D.Performance.FirstDayIncrRatePct}}</div>
+    <div class="k">累计升幅(%)</div><div class="v code">{{.D.Performance.TotalIncrRatePct}}</div>
+  </div>
+</div>
+{{end}}
+
+{{if .D.Intermediaries}}
+<div class="section">
+  <h3>中介机构</h3>
+  <table class="table">
+    <thead><tr><th style="width: 200px;">角色</th><th style="width: 70px;">序号</th><th>名称</th></tr></thead>
+    <tbody>
+      {{range .D.Intermediaries}}
+        <tr>
+          <td class="code">{{roleLabel .Role}}</td>
+          <td class="code">{{.Seq}}</td>
+          <td>{{.Name}}</td>
+        </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if .D.Management}}
+<div class="section">
+  <h3>管理层</h3>
+  <table class="table">
+    <thead><tr><th style="width: 70px;">序号</th><th style="width: 220px;">姓名</th><th style="width: 260px;">职务</th><th>简介</th></tr></thead>
+    <tbody>
+      {{range .D.Management}}
+      <tr>
+        <td class="code">{{.Seq}}</td>
+        <td>{{.Name}}</td>
+        <td>{{.Title}}</td>
+        <td>{{.Bio}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if .D.UseOfProceeds}}
+<div class="section">
+  <h3>用途</h3>
+  <table class="table">
+    <thead><tr><th style="width: 70px;">序号</th><th>内容</th></tr></thead>
+    <tbody>
+      {{range .D.UseOfProceeds}}
+      <tr>
+        <td class="code">{{.Seq}}</td>
+        <td>{{.Text}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if .D.MajorShareholders}}
+<div class="section">
+  <h3>主要股东</h3>
+  <table class="table">
+    <thead><tr><th style="width: 70px;">序号</th><th style="width: 260px;">名称</th><th style="width: 100px;">占比(%)</th><th>原始文本</th></tr></thead>
+    <tbody>
+      {{range .D.MajorShareholders}}
+      <tr>
+        <td class="code">{{.Seq}}</td>
+        <td>{{if .Name}}{{.Name}}{{else}}-{{end}}</td>
+        <td class="code">{{if .Pct}}{{.Pct}}{{else}}-{{end}}</td>
+        <td>{{.RawText}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{if .D.CompanySecretaries}}
+<div class="section">
+  <h3>公司秘书</h3>
+  <div class="row">
+    {{range .D.CompanySecretaries}}
+      <span class="chip">{{.Name}}</span>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{if .D.RawSections}}
+<div class="section">
+  <h3>Raw Sections（兜底字段）</h3>
+  {{range .D.RawSections}}
+    <div class="section" style="margin-top: 12px;">
+      <div class="row"><span class="chip code">{{.SectionID}}</span></div>
+      <table class="table" style="margin-top: 8px;">
+        <thead><tr><th style="width: 70px;">序号</th><th style="width: 260px;">Label</th><th>Value</th></tr></thead>
+        <tbody>
+          {{range .Items}}
+          <tr>
+            <td class="code">{{.Seq}}</td>
+            <td>{{.Label}}</td>
+            <td>{{.Value}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+
+{{define "detail.html"}}{{template "layout_detail" .}}{{end}}

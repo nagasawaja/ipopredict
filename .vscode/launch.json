@@ -1,0 +1,67 @@
+{
+  // VS Code Go Debug (requires Go extension)
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "HK IPO: Web (SQLite)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/hkipo",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "web",
+        "-addr",
+        ":8083"
+      ],
+      "env": {
+        "HK_IPO_DB_PATH": "${workspaceFolder}/sql/hk_ipo.db",
+        "GOCACHE": "/tmp/go-build"
+      }
+    },
+    {
+      "name": "HK IPO: Sync 00100 (SQLite)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/hkipo",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "sync",
+        "-symbol",
+        "00100"
+      ],
+      "env": {
+        "HK_IPO_DB_PATH": "${workspaceFolder}/sql/hk_ipo.db",
+        "GOCACHE": "/tmp/go-build"
+      }
+    },
+    {
+      "name": "HK IPO: Detail 00100",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/hkipo",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "detail",
+        "-symbol",
+        "00100"
+      ],
+      "env": {
+        "HK_IPO_DB_PATH": "${workspaceFolder}/sql/hk_ipo.db",
+        "GOCACHE": "/tmp/go-build"
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "HK IPO: One Click (Sync 00100 + Web)",
+      "configurations": [
+        "HK IPO: Sync 00100 (SQLite)",
+        "HK IPO: Web (SQLite)"
+      ],
+      "stopAll": true
+    }
+  ]
+}

@@ -1,0 +1,132 @@
+{{define "predict_body"}}
+<div class="row" style="justify-content: space-between;">
+  <div>
+    <div style="font-size: 18px; font-weight: 800;" class="code">{{.P.Stock.StockCode}} {{.P.Stock.StockName}}</div>
+    <div class="muted code">{{.P.Stock.HkSymbol}}</div>
+  </div>
+  <div class="row">
+    <a class="btnlink" href="/">返回列表</a>
+    <a class="btnlink" href="/stocks/{{.P.Stock.StockCode}}" style="margin-left: 6px;">详情</a>
+  </div>
+</div>
+
+<div class="section">
+  <h3>预测参数</h3>
+  <form method="get" class="row" style="gap: 8px; align-items: end; flex-wrap: wrap;">
+    <label style="display: flex; flex-direction: column; font-size: 12px; color: #666;">
+      预测认购倍数(sub)
+      <input name="sub" type="number" step="0.01" min="0.01" value="{{.P.InputSubText}}" placeholder="与 margin 二选一" style="min-width: 160px;">
+    </label>
+    <label style="display: flex; flex-direction: column; font-size: 12px; color: #666;">
+      孖展总额(HKD, margin)
+      <input name="margin" type="number" step="0.01" min="0.01" value="{{.P.InputMarginText}}" placeholder="与 sub 二选一" style="min-width: 200px;">
+    </label>
+    <label style="display: flex; flex-direction: column; font-size: 12px; color: #666;">
+      总申请人数 override(estimatedApplicants)
+      <input name="estimatedApplicants" type="number" step="1" min="1" value="{{.P.InputEstimatedApplicants}}" placeholder="留空走自动估计" style="min-width: 220px;">
+    </label>
+    <label style="display: flex; flex-direction: column; font-size: 12px; color: #666;">
+      乙组人数占比 override(bRatio)
+      <input name="bRatio" type="number" step="0.01" min="0.01" max="100" value="{{.P.InputBGroupRatio}}" placeholder="留空走自动估计" style="min-width: 200px;">
+    </label>
+    <label style="display: flex; flex-direction: column; font-size: 12px; color: #666;">
+      甲组一手占比 override(aOneLotRatio)
+      <input name="aOneLotRatio" type="number" step="0.01" min="0.01" max="100" value="{{.P.InputAOneHandRatio}}" placeholder="留空走自动估计" style="min-width: 220px;">
+    </label>
+    <button type="submit">重新预测</button>
+  </form>
+  <p class="muted" style="margin: 6px 0 0 0; font-size: 12px;">`sub` 与 `margin` 二选一即可；estimatedApplicants / bRatio / aOneLotRatio 留空时走自动估计；bRatio 与 aOneLotRatio 都支持填小数(0~1)或百分比(0~100)，例如 0.03 或 3 都表示 3%。</p>
+</div>
+{{if .P.ErrMsg}}
+<div class="section">
+  <p style="color: #c00;">{{.P.ErrMsg}}</p>
+</div>
+{{else}}
+<div class="section">
+  <h3>反推预测结果（孖展驱动）</h3>
+  <p class="muted" style="margin: 0 0 8px 0; font-size: 12px;">甲组人数：<strong>{{.P.GroupACount}}</strong>（{{fmtRatePctTrunc2 .P.GroupARatio}}）　乙组人数：<strong>{{.P.GroupBCount}}</strong>（{{fmtRatePctTrunc2 .P.GroupBRatio}}）　申请人数：<strong>{{.P.TotalApplicants}}</strong>　中签手数总和：<strong>{{.P.TotalAllocatedLots}}</strong>　中签人数总和：<strong>{{.P.TotalWinApplicants}}</strong></p>
+  <table class="table">
+    <thead>
+      <tr>
+        <th style="width: 56px;">序号</th>
+        <th style="width: 110px;">认购数量</th>
+        <th style="width: 96px;">申请人数</th>
+        <th style="width: 96px;">中签数</th>
+        <th style="width: 96px;">中签率</th>
+        <th style="width: 110px;">每户中签</th>
+        <th>备注</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range $i, $wr := .P.Result.WinRates}}
+      <tr>
+        <td class="code">{{inc $i}}</td>
+        <td class="code">{{if eq $wr.Group "甲组"}}<span class="grp-chip grp-a">甲</span>{{else if eq $wr.Group "乙组"}}<span class="grp-chip grp-b">乙</span>{{else}}{{$wr.Group}}{{end}} {{$wr.Lots}}</td>
+        <td class="code">{{$wr.Applicants}}</td>
+        <td class="code">{{fmtMinWinLots $wr.Applicants $wr.WinApplicants $wr.AllocatedLots}}</td>
+        <td class="code">{{fmtRatePctTrunc2 $wr.PerLotRate}}</td>
+        <td class="code">{{fmtRatePctTrunc2 $wr.WinRate}}</td>
+        <td>{{$wr.LotDistribution}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+<div class="section">
+  <h3>自动估计与最终取值</h3>
+  <div class="kvs">
+    <div class="k">raw 总申请人数</div><div class="v code">{{.P.Result.Meta.RawEstimatedApplicants}}</div>
+    <div class="k">自动总申请人数</div><div class="v code">{{.P.Result.Meta.AutoEstimatedApplicants}}</div>
+    <div class="k">最终总申请人数</div><div class="v code">{{.P.Result.Meta.FinalEstimatedApplicants}}{{if .P.Result.Meta.UsedEstimatedApplicantsOverride}}（手工 override）{{else}}（自动）{{end}}</div>
+    <div class="k">自动乙组人数占比</div><div class="v code">{{fmtRatePctTrunc2 .P.Result.Meta.AutoBGroupApplicantRatio}}</div>
+    <div class="k">最终乙组人数占比</div><div class="v code">{{fmtRatePctTrunc2 .P.Result.Meta.FinalBGroupApplicantRatio}}{{if .P.Result.Meta.UsedBGroupApplicantRatioOverride}}（手工 override）{{else}}（自动）{{end}}</div>
+    <div class="k">自动甲组一手占比</div><div class="v code">{{fmtRatePctTrunc2 .P.Result.Meta.AutoAOneHandApplicantRatio}}</div>
+    <div class="k">最终甲组一手占比</div><div class="v code">{{fmtRatePctTrunc2 .P.Result.Meta.FinalAOneHandApplicantRatio}}{{if .P.Result.Meta.UsedAOneHandApplicantOverride}}（手工 override）{{else}}（自动）{{end}}</div>
+    <div class="k">历史可比样本数</div><div class="v code">{{.P.Result.Meta.ComparablePeerCount}}</div>
+  </div>
+</div>
+{{if .P.Request}}
+<div class="section">
+  <h3>调用参数（MarginRequest）</h3>
+  <div class="kvs">
+    <div class="k">公开发售股数</div><div class="v code">{{.P.Request.PublicShares}}</div>
+    <div class="k">每手股数</div><div class="v code">{{.P.Request.LotSize}}</div>
+    <div class="k">发行价(港元)</div><div class="v code">{{.P.Request.Price}}</div>
+    <div class="k">孖展总额/申购资金(港元)</div><div class="v code">{{fmtFloat .P.Request.BrokerMarginSum}}</div>
+    <div class="k">总申请人数 override</div><div class="v code">{{if gt .P.Request.EstimatedApplicantsOverride 0}}{{.P.Request.EstimatedApplicantsOverride}}{{else}}-{{end}}</div>
+    <div class="k">乙组人数占比 override</div><div class="v code">{{if gt .P.Request.BGroupRatioOverride 0.0}}{{fmtRatePctTrunc2 .P.Request.BGroupRatioOverride}}{{else}}-{{end}}</div>
+    <div class="k">甲组一手占比 override</div><div class="v code">{{if gt .P.Request.AOneHandRatioOverride 0.0}}{{fmtRatePctTrunc2 .P.Request.AOneHandRatioOverride}}{{else}}-{{end}}</div>
+    {{if .P.Request.AutoEstimateContext}}
+    <div class="k">可比样本数</div><div class="v code">{{.P.Request.AutoEstimateContext.ComparablePeerCount}}</div>
+    <div class="k">并行招股数量</div><div class="v code">{{.P.Request.AutoEstimateContext.OverlapStockCount}}</div>
+    {{end}}
+  </div>
+  <h4 style="margin: 8px 0 4px; font-size: 12px; color: #666;">申购阶梯 Buckets</h4>
+  <table class="table">
+    <thead>
+      <tr>
+        <th class="num">股数</th>
+        <th class="num">金额(HKD)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .P.Request.Buckets}}
+      <tr>
+        <td class="num">{{.Lots}}</td>
+        <td class="num">{{fmtFloat .AmountHKD}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <h4 style="margin: 8px 0 4px; font-size: 12px; color: #666;">请求参数 JSON</h4>
+  <pre class="code" style="margin: 0; padding: 8px; background: #f8f8f8; border: 1px solid #eee; border-radius: 4px; font-size: 11px; overflow-x: auto; white-space: pre-wrap; word-break: break-all;">{{.P.RequestJSON}}</pre>
+</div>
+{{end}}
+{{end}}
+{{end}}
+
+{{define "predict.html"}}
+{{template "layout_head" .}}
+{{template "predict_body" .}}
+{{template "layout_foot" .}}
+{{end}}
