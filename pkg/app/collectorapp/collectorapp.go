@@ -39,7 +39,7 @@ func Run(mode, symbol string) error {
 		if err := orm.Init(); err != nil {
 			return fmt.Errorf("db init error: %w", err)
 		}
-		return runWriteDB(ctx, symbol)
+		return SyncToDB(ctx, symbol)
 	default:
 		return fmt.Errorf("unknown mode: %s (use list | detail | write-db)", mode)
 	}
@@ -84,8 +84,8 @@ func runDetail(ctx context.Context, symbol string) error {
 // 单只股票任务超时（拉详情+入库），超时则跳过该只继续下一只。
 const perStockTimeout = 3 * time.Minute
 
-// runWriteDB 从列表接口获取股票列表，整合详情接口后写入数据库；每只股票独立超时，超时仅跳过该只。
-func runWriteDB(ctx context.Context, symbolFilter string) error {
+// SyncToDB 从列表接口获取股票列表，整合详情接口后写入数据库；每只股票独立超时，超时仅跳过该只。
+func SyncToDB(ctx context.Context, symbolFilter string) error {
 	listClient := collector.NewStockListClient(nil)
 	listResp, err := listClient.FetchStockList(ctx)
 	if err != nil {

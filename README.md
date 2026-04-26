@@ -34,8 +34,22 @@ go run ./cmd/collector -mode write-db -symbol 00100
 
 - `HK_IPO_DB_DSN`：完整 sqlite DSN（优先）
 - `HK_IPO_DB_PATH`：sqlite 文件路径（默认 `./sql/hk_ipo.db`）
+- `HK_IPO_AUTO_SYNC_ON_START`：Web 启动后是否后台同步一次（`true/false`，默认 `false`）
+- `HK_IPO_AUTO_SYNC_INTERVAL`：Web 后台自动同步间隔，如 `24h`；为空则不定时同步
+- `HK_IPO_AUTO_SYNC_TIMEOUT`：单次后台同步超时，如 `30m`（默认 `30m`）
+- `HK_IPO_AUTO_SYNC_SYMBOL`：只同步单只股票代码；为空则同步全量
 
 > 首次运行会自动建表（GORM AutoMigrate）。
+
+## Docker
+
+```bash
+docker compose up --build -d
+```
+
+服务地址：<http://localhost:8083>
+
+Compose 默认挂载 `./sql` 到容器内 `/app/sql`，使用 `./sql/hk_ipo.db`，并开启启动后同步一次及每 24 小时自动同步。
 
 ## 目录说明
 

@@ -12,11 +12,16 @@
 
 <div class="section">
   <h3>预测参数</h3>
-  <form method="get" class="row" style="gap: 8px; align-items: end; flex-wrap: wrap;">
+  <form id="predict-form" method="post" class="row" style="gap: 8px; align-items: end; flex-wrap: wrap;">
     <label style="display: flex; flex-direction: column; font-size: 12px; color: #666;">
       预测认购倍数(sub)
-      <input name="sub" type="number" step="0.01" min="0.01" value="{{.P.InputSubText}}" placeholder="与 margin 二选一" style="min-width: 160px;">
+      <input name="sub" type="number" step="0.01" min="0.01" value="{{.P.InputSubText}}" placeholder="默认 1000" style="min-width: 160px;">
     </label>
+    <div class="row" style="gap: 4px; align-items: end;">
+      <button type="button" data-sub-quick="1000">1000倍</button>
+      <button type="button" data-sub-quick="3000">3000倍</button>
+      <button type="button" data-sub-quick="5000">5000倍</button>
+    </div>
     <label style="display: flex; flex-direction: column; font-size: 12px; color: #666;">
       孖展总额(HKD, margin)
       <input name="margin" type="number" step="0.01" min="0.01" value="{{.P.InputMarginText}}" placeholder="与 sub 二选一" style="min-width: 200px;">
@@ -35,7 +40,7 @@
     </label>
     <button type="submit">重新预测</button>
   </form>
-  <p class="muted" style="margin: 6px 0 0 0; font-size: 12px;">`sub` 与 `margin` 二选一即可；estimatedApplicants / bRatio / aOneLotRatio 留空时走自动估计；bRatio 与 aOneLotRatio 都支持填小数(0~1)或百分比(0~100)，例如 0.03 或 3 都表示 3%。</p>
+  <p class="muted" style="margin: 6px 0 0 0; font-size: 12px;">表单以 POST JSON 提交；sub 与 margin 二选一即可，留空时优先使用公开认购倍数，否则默认 sub=1000；estimatedApplicants / bRatio / aOneLotRatio 留空时走自动估计；bRatio 与 aOneLotRatio 都支持填小数(0~1)或百分比(0~100)，例如 0.03 或 3 都表示 3%。</p>
 </div>
 {{if .P.ErrMsg}}
 <div class="section">
@@ -50,6 +55,7 @@
       <tr>
         <th style="width: 56px;">序号</th>
         <th style="width: 110px;">认购数量</th>
+        <th style="width: 120px;">资金(HKD)</th>
         <th style="width: 96px;">申请人数</th>
         <th style="width: 96px;">中签数</th>
         <th style="width: 96px;">中签率</th>
@@ -62,6 +68,7 @@
       <tr>
         <td class="code">{{inc $i}}</td>
         <td class="code">{{if eq $wr.Group "甲组"}}<span class="grp-chip grp-a">甲</span>{{else if eq $wr.Group "乙组"}}<span class="grp-chip grp-b">乙</span>{{else}}{{$wr.Group}}{{end}} {{$wr.Lots}}</td>
+        <td class="code">{{if $.P.Request}}{{fmtFloatComma (calcAllotmentTierAmountHKD $wr.Lots $.P.Request.Price) 2}}{{else}}-{{end}}</td>
         <td class="code">{{$wr.Applicants}}</td>
         <td class="code">{{fmtMinWinLots $wr.Applicants $wr.WinApplicants $wr.AllocatedLots}}</td>
         <td class="code">{{fmtRatePctTrunc2 $wr.PerLotRate}}</td>
@@ -128,5 +135,43 @@
 {{define "predict.html"}}
 {{template "layout_head" .}}
 {{template "predict_body" .}}
+<script>
+(function(){
+  var form = document.getElementById('predict-form');
+  if (!form) return;
+  Array.prototype.forEach.call(document.querySelectorAll('[data-sub-quick]'), function(btn){
+    btn.addEventListener('click', function(){
+      if (form.elements.sub) form.elements.sub.value = btn.getAttribute('data-sub-quick') || '';
+      if (form.elements.margin) form.elements.margin.value = '';
+      submitPredictForm();
+    });
+  });
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    submitPredictForm();
+  });
+  function submitPredictForm(){
+    var payload = {};
+    ['sub', 'margin', 'estimatedApplicants', 'bRatio', 'aOneLotRatio'].forEach(function(name){
+      var el = form.elements[name];
+      payload[name] = el ? String(el.value || '').trim() : '';
+    });
+    fetch(window.location.pathname, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    }).then(function(resp){
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp.text();
+    }).then(function(html){
+      document.open();
+      document.write(html);
+      document.close();
+    }).catch(function(err){
+      alert('预测请求失败：' + err.message);
+    });
+  }
+})();
+</script>
 {{template "layout_foot" .}}
 {{end}}

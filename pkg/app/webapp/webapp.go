@@ -24,6 +24,7 @@ import (
 	"gorm.io/gorm"
 
 	"hk_ipo/orm"
+	"hk_ipo/pkg/app/collectorapp"
 	"hk_ipo/pkg/ipo_predict"
 	"hk_ipo/pkg/ipoprior"
 	"hk_ipo/pkg/pdfreader"
@@ -114,10 +115,12 @@ func Run(addr string) error {
 			"fmtMinWinLots": func(applicants, winApplicants int, allocatedLots int64) string {
 				return strconv.FormatInt(calcMinWinLots(applicants, winApplicants, allocatedLots), 10) + "手"
 			},
+			"calcAllotmentTierAmountHKD": calcAllotmentTierAmountHKD,
 		}).
 		ParseFS(templateFS, "templates/*.html"))
 
 	s := &server{db: orm.DB, tpl: tpl}
+	startAutoSync()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleList)
@@ -239,7 +242,21 @@ type predictPage struct {
 	ErrMsg                   string // 数据不足或预测失败时提示
 }
 
+const defaultPredictSubscriptionMultiple = 1000.0
+
+type predictInputPayload struct {
+	Sub                 string
+	Margin              string
+	EstimatedApplicants string
+	BRatio              string
+	AOneLotRatio        string
+}
+
 func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	ctx := r.Context()
 	code := strings.TrimPrefix(r.URL.Path, "/predict/")
 	code = strings.TrimSpace(code)
@@ -270,12 +287,10 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		s.renderPredict(w, page)
 		return
 	}
+	defaultSubMultiple := defaultPredictSubscriptionMultiple
 	var summary gormmodel.StockAllotmentSummary
-	summarySubMultiple := 0.0
 	if err := s.db.WithContext(ctx).Where("stock_id = ?", stock.ID).First(&summary).Error; err == nil {
-		if summary.SubscriptionMultiple > 0 {
-			summarySubMultiple = summary.SubscriptionMultiple
-		}
+		defaultSubMultiple = resolveDefaultPredictSubscriptionMultiple(summary.SubscriptionMultiple)
 	}
 	price := offering.OfferPrice
 	if price <= 0 {
@@ -287,9 +302,14 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fundraisingAmt := float64(offering.PublicOfferShares) * price
-	query := r.URL.Query()
-	subRaw := strings.TrimSpace(query.Get("sub"))
-	marginRaw := strings.TrimSpace(query.Get("margin"))
+	input, err := parsePredictInput(r)
+	if err != nil {
+		page.ErrMsg = "请求参数 JSON 格式错误: " + err.Error()
+		s.renderPredict(w, page)
+		return
+	}
+	subRaw := strings.TrimSpace(input.Sub)
+	marginRaw := strings.TrimSpace(input.Margin)
 	marginInput, err := parsePositiveFloatQuery(marginRaw)
 	if err != nil {
 		page.ErrMsg = "margin 参数格式错误（需为正数）"
@@ -302,21 +322,21 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		s.renderPredict(w, page)
 		return
 	}
-	page.InputEstimatedApplicants = strings.TrimSpace(query.Get("estimatedApplicants"))
+	page.InputEstimatedApplicants = strings.TrimSpace(input.EstimatedApplicants)
 	estimatedApplicantsOverride, err := parsePositiveIntQuery(page.InputEstimatedApplicants)
 	if err != nil {
 		page.ErrMsg = "estimatedApplicants 参数格式错误（需为正整数）"
 		s.renderPredict(w, page)
 		return
 	}
-	page.InputBGroupRatio = strings.TrimSpace(query.Get("bRatio"))
+	page.InputBGroupRatio = strings.TrimSpace(input.BRatio)
 	bGroupRatioInput, err := parseRatioQuery(page.InputBGroupRatio)
 	if err != nil {
 		page.ErrMsg = "bRatio 参数格式错误（需为正数，可填 0~1 或 0~100）"
 		s.renderPredict(w, page)
 		return
 	}
-	page.InputAOneHandRatio = strings.TrimSpace(query.Get("aOneLotRatio"))
+	page.InputAOneHandRatio = strings.TrimSpace(input.AOneLotRatio)
 	aOneHandRatioInput, err := parseRatioQuery(page.InputAOneHandRatio)
 	if err != nil {
 		page.ErrMsg = "aOneLotRatio 参数格式错误（需为正数，可填 0~1 或 0~100）"
@@ -335,14 +355,9 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		effectiveSub = inferRealSubscriptionMultipleFromBrokerMarginSum(fundraisingAmt, marginInput)
 		page.InputMarginText = strconv.FormatFloat(marginInput, 'f', -1, 64)
 	default:
-		if summarySubMultiple <= 0 {
-			page.ErrMsg = "缺少预测输入：请传 ?sub=预测认购倍数 或 ?margin=预测孖展总额(HKD)，当前 allotmentSummary.subscription_multiple 也为空"
-			s.renderPredict(w, page)
-			return
-		}
-		effectiveSub = summarySubMultiple
-		brokerMarginSum = inferBrokerMarginSumFromSubscriptionMultiple(fundraisingAmt, summarySubMultiple)
-		page.InputSubText = strconv.FormatFloat(summarySubMultiple, 'f', -1, 64)
+		effectiveSub = defaultSubMultiple
+		brokerMarginSum = inferBrokerMarginSumFromSubscriptionMultiple(fundraisingAmt, effectiveSub)
+		page.InputSubText = strconv.FormatFloat(effectiveSub, 'f', -1, 64)
 	}
 	page.InputSub = effectiveSub
 	page.InputMargin = brokerMarginSum
@@ -423,6 +438,72 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		page.GroupBRatio = float64(page.GroupBCount) / float64(page.TotalApplicants)
 	}
 	s.renderPredict(w, page)
+}
+
+func parsePredictInput(r *http.Request) (predictInputPayload, error) {
+	if r.Method != http.MethodPost {
+		return predictInputPayload{}, nil
+	}
+	defer r.Body.Close()
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.UseNumber()
+	var raw map[string]any
+	if err := dec.Decode(&raw); err != nil {
+		if errors.Is(err, io.EOF) {
+			return predictInputPayload{}, nil
+		}
+		return predictInputPayload{}, err
+	}
+	field := func(name string) (string, error) {
+		return predictJSONFieldString(raw[name])
+	}
+	sub, err := field("sub")
+	if err != nil {
+		return predictInputPayload{}, fmt.Errorf("sub: %w", err)
+	}
+	margin, err := field("margin")
+	if err != nil {
+		return predictInputPayload{}, fmt.Errorf("margin: %w", err)
+	}
+	estimatedApplicants, err := field("estimatedApplicants")
+	if err != nil {
+		return predictInputPayload{}, fmt.Errorf("estimatedApplicants: %w", err)
+	}
+	bRatio, err := field("bRatio")
+	if err != nil {
+		return predictInputPayload{}, fmt.Errorf("bRatio: %w", err)
+	}
+	aOneLotRatio, err := field("aOneLotRatio")
+	if err != nil {
+		return predictInputPayload{}, fmt.Errorf("aOneLotRatio: %w", err)
+	}
+	return predictInputPayload{
+		Sub:                 sub,
+		Margin:              margin,
+		EstimatedApplicants: estimatedApplicants,
+		BRatio:              bRatio,
+		AOneLotRatio:        aOneLotRatio,
+	}, nil
+}
+
+func resolveDefaultPredictSubscriptionMultiple(publicSubscriptionMultiple float64) float64 {
+	if publicSubscriptionMultiple > 0 {
+		return publicSubscriptionMultiple
+	}
+	return defaultPredictSubscriptionMultiple
+}
+
+func predictJSONFieldString(v any) (string, error) {
+	switch x := v.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return strings.TrimSpace(x), nil
+	case json.Number:
+		return strings.TrimSpace(x.String()), nil
+	default:
+		return "", fmt.Errorf("must be string or number")
+	}
 }
 
 // inferBrokerMarginSumFromSubscriptionMultiple 将“真实总超购倍数”反推为模型入参 BrokerMarginSum。
@@ -1196,12 +1277,22 @@ type allotmentTierView struct {
 	Seq                 int
 	GroupCode           string
 	Lots                int64
+	AmountHKD           float64
 	Applicants          int
 	WinLots             int64
 	WinRatePct          float64
 	HouseholdWinRatePct float64
 	Remark              string
 }
+
+const (
+	ipoBrokerageRate             = 0.0100000
+	ipoSFCTransactionLevyRate    = 0.0000270
+	ipoAFRCTransactionLevyRate   = 0.0000015
+	ipoExchangeTradingFeeRate    = 0.0000565
+	ipoSubscriptionFeeRate       = ipoBrokerageRate + ipoSFCTransactionLevyRate + ipoAFRCTransactionLevyRate + ipoExchangeTradingFeeRate
+	ipoSubscriptionFeeMultiplier = 1 + ipoSubscriptionFeeRate
+)
 
 type rawItemView struct {
 	Seq   int
@@ -1275,16 +1366,22 @@ func getStockDetailByCode(ctx context.Context, db *gorm.DB, code string) (stockD
 	if err := tx.Where("stock_id = ?", stock.ID).Order("seq ASC").Find(&tiers).Error; err != nil {
 		return stockDetailPage{}, fmt.Errorf("select allotment tiers: %w", err)
 	}
+	allotmentTierPrice := detailAllotmentTierPrice(out.AllotmentSummary, out.Offering)
+	lotSize := 0
+	if out.Offering != nil {
+		lotSize = out.Offering.LotSize
+	}
 	out.AllotmentTiers = make([]allotmentTierView, 0, len(tiers))
 	for _, t := range tiers {
 		out.AllotmentTiers = append(out.AllotmentTiers, allotmentTierView{
 			Seq:                 t.Seq,
 			GroupCode:           t.GroupCode,
 			Lots:                t.Lots,
+			AmountHKD:           calcAllotmentTierAmountHKD(t.Lots, allotmentTierPrice),
 			Applicants:          t.Applicants,
 			WinLots:             t.WinLots,
 			WinRatePct:          t.WinRatePct,
-			HouseholdWinRatePct: calcHouseholdWinRatePct(t.Applicants, t.WinLots, t.Remark),
+			HouseholdWinRatePct: calcTierHouseholdWinRatePct(t.Applicants, t.WinLots, t.Remark, t.Lots, lotSize, t.WinRatePct),
 			Remark:              t.Remark,
 		})
 		switch strings.ToUpper(strings.TrimSpace(t.GroupCode)) {
@@ -1325,6 +1422,33 @@ func getStockDetailByCode(ctx context.Context, db *gorm.DB, code string) (stockD
 	}
 
 	return out, nil
+}
+
+func detailAllotmentTierPrice(summary *gormmodel.StockAllotmentSummary, offering *gormmodel.StockOffering) float64 {
+	if summary != nil {
+		if summary.OfferPrice > 0 {
+			return summary.OfferPrice
+		}
+		if summary.OfferPriceHigh > 0 {
+			return summary.OfferPriceHigh
+		}
+	}
+	if offering != nil {
+		if offering.OfferPrice > 0 {
+			return offering.OfferPrice
+		}
+		if offering.OfferPriceHigh > 0 {
+			return offering.OfferPriceHigh
+		}
+	}
+	return 0
+}
+
+func calcAllotmentTierAmountHKD(lots int64, price float64) float64 {
+	if lots <= 0 || price <= 0 {
+		return 0
+	}
+	return float64(lots) * price * ipoSubscriptionFeeMultiplier
 }
 
 func takeOne[T any](tx *gorm.DB, stockID uint64) (*T, error) {
@@ -1395,6 +1519,75 @@ func parseFloat(s string) float64 {
 	return f
 }
 
+func startAutoSync() {
+	onStart := parseBoolEnv("HK_IPO_AUTO_SYNC_ON_START", false)
+	interval := parseDurationEnv("HK_IPO_AUTO_SYNC_INTERVAL", 0)
+	symbol := strings.TrimSpace(os.Getenv("HK_IPO_AUTO_SYNC_SYMBOL"))
+	if !onStart && interval <= 0 {
+		return
+	}
+
+	go func() {
+		if onStart {
+			runAutoSyncOnce(symbol)
+		}
+		if interval <= 0 {
+			return
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			runAutoSyncOnce(symbol)
+		}
+	}()
+}
+
+func runAutoSyncOnce(symbol string) {
+	timeout := parseDurationEnv("HK_IPO_AUTO_SYNC_TIMEOUT", 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	if symbol == "" {
+		log.Printf("auto sync started: full")
+	} else {
+		log.Printf("auto sync started: symbol=%s", symbol)
+	}
+	if err := collectorapp.SyncToDB(ctx, symbol); err != nil {
+		log.Printf("auto sync failed: %v", err)
+		return
+	}
+	log.Printf("auto sync finished")
+}
+
+func parseBoolEnv(key string, defaultVal bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "" {
+		return defaultVal
+	}
+	switch v {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return defaultVal
+	}
+}
+
+func parseDurationEnv(key string, defaultVal time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return defaultVal
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	if hours, err := strconv.ParseFloat(v, 64); err == nil && hours > 0 {
+		return time.Duration(hours * float64(time.Hour))
+	}
+	return defaultVal
+}
+
 func formatPctTrunc(v float64, digits int) string {
 	if digits < 0 {
 		digits = 0
@@ -1418,7 +1611,8 @@ func calcMinWinLots(applicants, winApplicants int, allocatedLots int64) int64 {
 	return minLots
 }
 
-var reHouseholdWinRemark = regexp.MustCompile(`(\d+)\s*名(?:申請人|申请人)?\s*(?:中|中的)\s*(\d+)\s*名`)
+var reHouseholdWinRemark = regexp.MustCompile(`(\d+)\s*(?:名(?:申請人|申请人)?|份)\s*(?:中|中的|中有)\s*(\d+)\s*(?:名|份)?`)
+var reHouseholdWinAmongRemark = regexp.MustCompile(`其中\s*(\d+)\s*名`)
 
 func calcHouseholdWinRatePct(applicants int, winLots int64, remark string) float64 {
 	if applicants <= 0 {
@@ -1426,6 +1620,8 @@ func calcHouseholdWinRatePct(applicants int, winLots int64, remark string) float
 	}
 	remark = strings.TrimSpace(remark)
 	if strings.Contains(remark, "獲發額外") || strings.Contains(remark, "获发额外") ||
+		strings.Contains(remark, "獲得額外") || strings.Contains(remark, "获得额外") ||
+		strings.Contains(remark, "取得額外") || strings.Contains(remark, "取得额外") ||
 		strings.Contains(remark, "加上") || strings.Contains(remark, "另加") {
 		return 100
 	}
@@ -1440,10 +1636,36 @@ func calcHouseholdWinRatePct(applicants int, winLots int64, remark string) float
 			return rate
 		}
 	}
+	if m := reHouseholdWinAmongRemark.FindStringSubmatch(remark); len(m) == 2 {
+		hit, err := strconv.Atoi(m[1])
+		if err == nil && hit >= 0 {
+			rate := float64(hit) * 100 / float64(applicants)
+			if rate > 100 {
+				return 100
+			}
+			return rate
+		}
+	}
 	if winLots >= 2 {
 		return 100
 	}
 	return 0
+}
+
+func calcTierHouseholdWinRatePct(applicants int, winLots int64, remark string, requestedShares int64, lotSize int, winRatePct float64) float64 {
+	rate := calcHouseholdWinRatePct(applicants, winLots, remark)
+	if rate > 0 || strings.TrimSpace(remark) != "" {
+		return rate
+	}
+	if applicants <= 0 || winLots <= 0 || requestedShares <= 0 || lotSize <= 0 || winRatePct <= 0 {
+		return rate
+	}
+
+	guaranteedWinRatePct := float64(winLots*int64(lotSize)) * 100 / float64(requestedShares)
+	if math.Abs(guaranteedWinRatePct-winRatePct) < 0.01 {
+		return 100
+	}
+	return rate
 }
 
 // buildSortURL 生成点击排序列的 URL：若当前已按该列排序则翻转 order，否则 order=asc；保留其他查询参数。

@@ -1,6 +1,11 @@
 package webapp
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 func TestResolvePredictInputs(t *testing.T) {
 	fundraising := 100.0
@@ -86,6 +91,64 @@ func TestResolvePredictInputs(t *testing.T) {
 			t.Fatalf("inputMarginText=%q want 4000", inputMarginText)
 		}
 	})
+}
+
+func TestParsePredictInputPostJSON(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/predict/01879", strings.NewReader(`{
+		"sub": 5001,
+		"margin": "",
+		"estimatedApplicants": 12345,
+		"bRatio": "3",
+		"aOneLotRatio": "0.42"
+	}`))
+	got, err := parsePredictInput(r)
+	if err != nil {
+		t.Fatalf("parsePredictInput: %v", err)
+	}
+	if got.Sub != "5001" {
+		t.Fatalf("Sub=%q want 5001", got.Sub)
+	}
+	if got.Margin != "" {
+		t.Fatalf("Margin=%q want empty", got.Margin)
+	}
+	if got.EstimatedApplicants != "12345" {
+		t.Fatalf("EstimatedApplicants=%q want 12345", got.EstimatedApplicants)
+	}
+	if got.BRatio != "3" {
+		t.Fatalf("BRatio=%q want 3", got.BRatio)
+	}
+	if got.AOneLotRatio != "0.42" {
+		t.Fatalf("AOneLotRatio=%q want 0.42", got.AOneLotRatio)
+	}
+}
+
+func TestParsePredictInputGetDefaultsToEmpty(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/predict/01879?sub=5001", nil)
+	got, err := parsePredictInput(r)
+	if err != nil {
+		t.Fatalf("parsePredictInput: %v", err)
+	}
+	if got != (predictInputPayload{}) {
+		t.Fatalf("got=%+v want empty payload", got)
+	}
+}
+
+func TestResolveDefaultPredictSubscriptionMultiple(t *testing.T) {
+	tests := []struct {
+		name   string
+		public float64
+		want   float64
+	}{
+		{name: "use_public_subscription_multiple", public: 523.45, want: 523.45},
+		{name: "fallback_to_1000_when_missing", public: 0, want: 1000},
+		{name: "fallback_to_1000_when_invalid", public: -1, want: 1000},
+	}
+	for _, tt := range tests {
+		got := resolveDefaultPredictSubscriptionMultiple(tt.public)
+		if got != tt.want {
+			t.Fatalf("%s: got=%v want=%v", tt.name, got, tt.want)
+		}
+	}
 }
 
 func TestInferBrokerMarginSumFromSubscriptionMultiple(t *testing.T) {

@@ -34,6 +34,7 @@
       <tr>
         <th style="width: 56px;">序号</th>
         <th style="width: 110px;">认购数量</th>
+        <th style="width: 120px;">资金(HKD)</th>
         <th style="width: 96px;">申请人数</th>
         <th style="width: 96px;">中签数</th>
         <th style="width: 96px;">中签率</th>
@@ -48,6 +49,7 @@
         <td class="code">
           {{if eq .GroupCode "A"}}<span class="grp-chip grp-a">甲</span>{{else if eq .GroupCode "B"}}<span class="grp-chip grp-b">乙</span>{{else}}{{.GroupCode}}{{end}} {{.Lots}}
         </td>
+        <td class="code">{{if .AmountHKD}}{{fmtFloatComma .AmountHKD 2}}{{else}}-{{end}}</td>
         <td class="code">{{.Applicants}}</td>
         <td class="code">{{.WinLots}}手</td>
         <td class="code">{{fmtPctTrunc2 .WinRatePct}}</td>
