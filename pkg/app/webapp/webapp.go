@@ -1611,7 +1611,7 @@ func calcMinWinLots(applicants, winApplicants int, allocatedLots int64) int64 {
 	return minLots
 }
 
-var reHouseholdWinRemark = regexp.MustCompile(`(\d+)\s*(?:名(?:申請人|申请人)?|份)\s*(?:中|中的|中有)\s*(\d+)\s*(?:名|份)?`)
+var reHouseholdWinRemark = regexp.MustCompile(`(\d+)\s*(?:名(?:申請人|申请人|申請者|申请者)?|份)\s*(?:中|中的|中有)\s*(\d+)\s*(?:名|份)?`)
 var reHouseholdWinAmongRemark = regexp.MustCompile(`其中\s*(\d+)\s*名`)
 
 func calcHouseholdWinRatePct(applicants int, winLots int64, remark string) float64 {

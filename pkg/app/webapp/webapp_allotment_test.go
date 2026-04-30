@@ -57,6 +57,13 @@ func TestCalcHouseholdWinRatePct(t *testing.T) {
 			want:       float64(50) * 100 / float64(82364),
 		},
 		{
+			name:       "lottery_from_applicant_word_shenqingzhe",
+			applicants: 93509,
+			winLots:    1,
+			remark:     "93509名申請者中有1871名獲發100股H股",
+			want:       float64(1871) * 100 / float64(93509),
+		},
+		{
 			name:       "lottery_from_among_remark",
 			applicants: 52515,
 			winLots:    1,

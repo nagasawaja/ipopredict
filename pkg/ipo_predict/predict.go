@@ -100,6 +100,10 @@ const (
 	oneHandCapRatioOver500 = 0.3172098833962666
 	// 乙组大户相对乙头的中签率递减系数（每档略降）
 	bGroupTierDecay = 0.04
+	// 乙组申请人数分布：历史高倍数样本显示乙头确实最密集，但不应按 1/tl^2 过度集中。
+	bGroupApplicantWeightPower = 1.35
+	bGroupHeadWeightBoost      = 3.0
+	bGroupTailWeightBoost      = 10.0
 	// 甲组非一手档边际递减系数：0=纯按钱分(每手中签率恒定)，1=按人头分；0.3~0.5 使每手中签率随申购手数缓慢下降
 	aGroupDecayFactor = 0.4
 	// 一手中签率经验公式（仅使用预测前字段：sub/lot_size/price/public_offer_shares）
@@ -712,7 +716,7 @@ func runMarginFlow(req MarginRequest) (PredictResult, error) {
 	}
 	aOneHandApplicants := allocateApplicantsByWeight(oneHandA, aOneHandWeights, false)
 	aOtherApplicants := allocateApplicantsByWeight(otherA, aOtherWeights, false)
-	// 乙头 + 顶头槌（乙尾）给大权重；中间档保持 1/tl^2 衰减
+	// 乙头 + 顶头槌（乙尾）给大权重；中间档按历史样本采用温和幂次衰减。
 	var bWeights []float64
 	var bSumW float64
 	var minAmountB float64
@@ -723,11 +727,11 @@ func runMarginFlow(req MarginRequest) (PredictResult, error) {
 	}
 	for i, b := range bBuckets {
 		tl := tierLots(b.Lots)
-		w := 1.0 / (float64(tl) * float64(tl))
+		w := 1.0 / math.Pow(float64(tl), bGroupApplicantWeightPower)
 		if b.AmountHKD <= minAmountB*1.001 {
-			w *= 8.0
+			w *= bGroupHeadWeightBoost
 		} else if i == len(bBuckets)-1 {
-			w *= 20.0
+			w *= bGroupTailWeightBoost
 		}
 		bWeights = append(bWeights, w)
 		bSumW += w
@@ -906,6 +910,7 @@ func runMarginFlow(req MarginRequest) (PredictResult, error) {
 	// 甲乙组分别补齐到各自池子，避免总分配明显低于公开发售股数。
 	rebalanceAllocatedShares(aWinRates, poolSharesI, lotSize)
 	rebalanceAllocatedShares(bWinRates, publicShares-poolSharesI, lotSize)
+	enforceHouseholdWinRateNonDecreasing(bWinRates, lotSize)
 	comparablePeerCount := 0
 	if req.AutoEstimateContext != nil {
 		comparablePeerCount = max(0, req.AutoEstimateContext.ComparablePeerCount)
@@ -1054,5 +1059,55 @@ func rebalanceAllocatedShares(list []WinRateInfo, targetShares int64, lotSize in
 	for i := range list {
 		list[i].AllocatedLots = list[i].AllocatedShares / int64(lotSize)
 		applyBottomUpAllocation(&list[i], lotSize)
+	}
+}
+
+func enforceHouseholdWinRateNonDecreasing(list []WinRateInfo, lotSize int) {
+	if len(list) < 2 || lotSize <= 0 {
+		return
+	}
+	lotSizeI := int64(lotSize)
+	for pass := 0; pass < len(list)*len(list)*4; pass++ {
+		changed := false
+		for i := 1; i < len(list); i++ {
+			prev := &list[i-1]
+			curr := &list[i]
+			if prev.Applicants <= 0 || curr.Applicants <= 0 {
+				continue
+			}
+			prevWinLots := min(prev.AllocatedLots, int64(prev.Applicants))
+			currWinLots := min(curr.AllocatedLots, int64(curr.Applicants))
+			if prevWinLots <= 0 {
+				continue
+			}
+			left := prevWinLots*int64(curr.Applicants) - currWinLots*int64(prev.Applicants)
+			if left <= 0 {
+				continue
+			}
+			moveLots := (left + int64(prev.Applicants+curr.Applicants) - 1) / int64(prev.Applicants+curr.Applicants)
+			if moveLots <= 0 {
+				moveLots = 1
+			}
+			if moveLots > prevWinLots {
+				moveLots = prevWinLots
+			}
+			currHeadroomLots := curr.SubscribedShares/lotSizeI - curr.AllocatedLots
+			if currHeadroomLots <= 0 {
+				continue
+			}
+			if moveLots > currHeadroomLots {
+				moveLots = currHeadroomLots
+			}
+			prev.AllocatedLots -= moveLots
+			prev.AllocatedShares = prev.AllocatedLots * lotSizeI
+			curr.AllocatedLots += moveLots
+			curr.AllocatedShares = curr.AllocatedLots * lotSizeI
+			applyBottomUpAllocation(prev, lotSize)
+			applyBottomUpAllocation(curr, lotSize)
+			changed = true
+		}
+		if !changed {
+			return
+		}
 	}
 }
