@@ -1,3 +1,65 @@
+{{define "live_margin_section"}}
+{{if .LiveMargin}}
+<div class="section">
+  <h3>实时孖展</h3>
+  <div class="kvs">
+    <div class="k">超额认购倍数</div><div class="v code">{{fmtFloat .LiveMargin.ApplyRate}}倍</div>
+    <div class="k">孖展总额</div><div class="v code">{{fmtHKDMoney .LiveMargin.TotalMarginMoney}}</div>
+    <div class="k">公開發售募資額</div><div class="v code">{{fmtHKDMoney .LiveMargin.RaisingMoney}}</div>
+    <div class="k">数据更新于</div><div class="v code">{{if .LiveMargin.LastUpdateTime}}{{.LiveMargin.LastUpdateTime}}{{else}}-{{end}}</div>
+    <div class="k">单位</div><div class="v code">HKD</div>
+  </div>
+  {{if .LiveMargin.Brokers}}
+  <div class="row" style="margin-top: 8px;">
+    <button type="button" data-live-margin-open>各大券商孖展資金</button>
+  </div>
+  <dialog class="modal" data-live-margin-dialog>
+    <div class="modal-head">
+      <div class="modal-title">各大券商孖展資金</div>
+      <button type="button" class="icon-btn" data-live-margin-close aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>券商</th>
+            <th class="num" style="width: 140px;">孖展资金</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .LiveMargin.Brokers}}
+          <tr>
+            <td>{{.BrokerName}}</td>
+            <td class="num code">{{fmtHKDMoney .MarginMoney}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </dialog>
+  <script>
+  (function(){
+    var root = document.currentScript && document.currentScript.parentElement;
+    if (!root) return;
+    var openBtn = root.querySelector('[data-live-margin-open]');
+    var closeBtn = root.querySelector('[data-live-margin-close]');
+    var dialog = root.querySelector('[data-live-margin-dialog]');
+    if (!openBtn || !dialog) return;
+    openBtn.addEventListener('click', function(){
+      if (dialog.showModal) dialog.showModal();
+      else dialog.setAttribute('open', 'open');
+    });
+    if (closeBtn) closeBtn.addEventListener('click', function(){ dialog.close ? dialog.close() : dialog.removeAttribute('open'); });
+    dialog.addEventListener('click', function(e){
+      if (e.target === dialog) dialog.close ? dialog.close() : dialog.removeAttribute('open');
+    });
+  })();
+  </script>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+
 {{define "detail_body"}}
 <div class="row" style="justify-content: space-between;">
   <div>
@@ -8,6 +70,8 @@
     <a class="btnlink" href="/">返回列表</a>
   </div>
 </div>
+
+{{template "live_margin_section" .D}}
 
 {{if .D.AllotmentSummary}}
 <div class="section">

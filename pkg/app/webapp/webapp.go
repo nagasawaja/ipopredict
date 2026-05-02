@@ -103,6 +103,7 @@ func Run(addr string) error {
 			"fmtFloat": func(f float64) string {
 				return strconv.FormatFloat(f, 'f', -1, 64)
 			},
+			"fmtHKDMoney": formatHKDMoney,
 			"fmtPctTrunc2": func(v float64) string {
 				return formatPctTrunc(v, 2)
 			},
@@ -224,13 +225,14 @@ type predictPage struct {
 	Stock                    gormmodel.Stock
 	Request                  *predictRequestDisplay // 调用预测时的入参
 	RequestJSON              string                 // 入参 JSON 化，用于页面展示
-	InputSub                 float64                // 页面输入：认购倍数
-	InputMargin              float64                // 页面输入：孖展总额
-	InputSubText             string                 // 页面展示：认购倍数字符串
-	InputMarginText          string                 // 页面展示：孖展总额字符串
-	InputEstimatedApplicants string                 // 页面输入：总申请人数 override
-	InputBGroupRatio         string                 // 页面输入：乙组占比 override
-	InputAOneHandRatio       string                 // 页面输入：甲组一手占比 override
+	LiveMargin               *vBrokerMarginData
+	InputSub                 float64 // 页面输入：认购倍数
+	InputMargin              float64 // 页面输入：孖展总额
+	InputSubText             string  // 页面展示：认购倍数字符串
+	InputMarginText          string  // 页面展示：孖展总额字符串
+	InputEstimatedApplicants string  // 页面输入：总申请人数 override
+	InputBGroupRatio         string  // 页面输入：乙组占比 override
+	InputAOneHandRatio       string  // 页面输入：甲组一手占比 override
 	Result                   *ipo_predict.PredictResult
 	GroupACount              int // 甲组人数合计
 	GroupBCount              int // 乙组人数合计
@@ -289,8 +291,18 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 	}
 	defaultSubMultiple := defaultPredictSubscriptionMultiple
 	var summary gormmodel.StockAllotmentSummary
+	hasAllotmentSummary := false
 	if err := s.db.WithContext(ctx).Where("stock_id = ?", stock.ID).First(&summary).Error; err == nil {
+		hasAllotmentSummary = true
 		defaultSubMultiple = resolveDefaultPredictSubscriptionMultiple(summary.SubscriptionMultiple)
+	}
+	if !hasAllotmentSummary || summary.SubscriptionMultiple <= 0 {
+		if liveMargin, err := newVBrokerMarginClient(nil).fetchByStockCode(ctx, stock.StockCode); err == nil && liveMargin != nil {
+			page.LiveMargin = liveMargin
+			if liveMargin.ApplyRate > 0 {
+				defaultSubMultiple = liveMargin.ApplyRate
+			}
+		}
 	}
 	price := offering.OfferPrice
 	if price <= 0 {
@@ -1260,6 +1272,7 @@ type stockDetailPage struct {
 	Performance      *gormmodel.StockPerformance
 	RaiseMoney       *gormmodel.StockRaiseMoney
 	AllotmentSummary *gormmodel.StockAllotmentSummary
+	LiveMargin       *vBrokerMarginData
 	GroupACount      int
 	GroupBCount      int
 
@@ -1348,6 +1361,11 @@ func getStockDetailByCode(ctx context.Context, db *gorm.DB, code string) (stockD
 	out.AllotmentSummary, err = takeOne[gormmodel.StockAllotmentSummary](tx, stock.ID)
 	if err != nil {
 		return stockDetailPage{}, fmt.Errorf("select allotment summary: %w", err)
+	}
+	if out.AllotmentSummary == nil || out.AllotmentSummary.SubscriptionMultiple <= 0 {
+		if liveMargin, err := newVBrokerMarginClient(nil).fetchByStockCode(ctx, stock.StockCode); err == nil && liveMargin != nil {
+			out.LiveMargin = liveMargin
+		}
 	}
 
 	if err := tx.Where("stock_id = ?", stock.ID).Order("seq ASC").Find(&out.CompanySecretaries).Error; err != nil {
@@ -1449,6 +1467,18 @@ func calcAllotmentTierAmountHKD(lots int64, price float64) float64 {
 		return 0
 	}
 	return float64(lots) * price * ipoSubscriptionFeeMultiplier
+}
+
+func formatHKDMoney(v float64) string {
+	abs := math.Abs(v)
+	switch {
+	case abs >= 1e8:
+		return strconv.FormatFloat(v/1e8, 'f', 2, 64) + " 亿"
+	case abs >= 1e4:
+		return strconv.FormatFloat(v/1e4, 'f', 2, 64) + " 万"
+	default:
+		return strconv.FormatFloat(v, 'f', 2, 64)
+	}
 }
 
 func takeOne[T any](tx *gorm.DB, stockID uint64) (*T, error) {

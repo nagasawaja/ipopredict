@@ -198,6 +198,23 @@ func TestInferRealSubscriptionMultipleFromBrokerMarginSum(t *testing.T) {
 	}
 }
 
+func TestFormatHKDMoney(t *testing.T) {
+	tests := []struct {
+		in   float64
+		want string
+	}{
+		{in: 34583000000, want: "345.83 亿"},
+		{in: 100002000, want: "1.00 亿"},
+		{in: 3910000, want: "391.00 万"},
+		{in: 390000, want: "39.00 万"},
+	}
+	for _, tt := range tests {
+		if got := formatHKDMoney(tt.in); got != tt.want {
+			t.Fatalf("formatHKDMoney(%v)=%q want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestParsePositiveIntQuery(t *testing.T) {
 	tests := []struct {
 		in      string

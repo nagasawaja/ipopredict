@@ -49,6 +49,12 @@
     .kvs .k { color: #666; }
     .footer { margin-top: 6px; font-size: 11px; color: #999; }
     .chip { display: inline-block; padding: 1px 6px; margin-right: 4px; background: #f0f0f0; border-radius: 3px; font-size: 12px; }
+    .modal { width: min(560px, calc(100vw - 24px)); max-height: min(620px, calc(100vh - 48px)); border: 1px solid #bbb; border-radius: 6px; padding: 0; background: #fff; color: #333; box-shadow: 0 16px 48px rgba(0,0,0,.22); }
+    .modal::backdrop { background: rgba(0,0,0,.28); }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border-bottom: 1px solid #eee; }
+    .modal-title { font-weight: 700; }
+    .modal-body { padding: 8px 10px; overflow: auto; max-height: calc(min(620px, calc(100vh - 48px)) - 42px); }
+    .icon-btn { min-width: 28px; height: 28px; padding: 0; line-height: 1; font-size: 18px; }
   </style>
 </head>
 <body>
