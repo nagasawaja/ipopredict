@@ -49,7 +49,7 @@ docker compose up --build -d
 
 服务地址：<http://localhost:8083>
 
-Compose 默认挂载 `./sql` 到容器内 `/app/sql`，使用 `./sql/hk_ipo.db`，并开启启动后同步一次及每 24 小时自动同步。
+Compose 默认挂载 `./sql` 到容器内 `/app/sql`，使用 `./sql/hk_ipo.db`，并开启启动后同步一次及每 12 小时自动同步。
 
 ## 目录说明
 

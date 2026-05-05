@@ -8,7 +8,7 @@ services:
     environment:
       HK_IPO_DB_PATH: /app/sql/hk_ipo.db
       HK_IPO_AUTO_SYNC_ON_START: "true"
-      HK_IPO_AUTO_SYNC_INTERVAL: 24h
+      HK_IPO_AUTO_SYNC_INTERVAL: 12h
       HK_IPO_AUTO_SYNC_TIMEOUT: 30m
       TZ: Asia/Shanghai
     volumes:

@@ -1558,18 +1558,44 @@ func startAutoSync() {
 	}
 
 	go func() {
+		lastRun := time.Now()
 		if onStart {
 			runAutoSyncOnce(symbol)
+			lastRun = time.Now()
 		}
 		if interval <= 0 {
 			return
 		}
-		ticker := time.NewTicker(interval)
+		pollInterval := autoSyncPollInterval(interval)
+		log.Printf("auto sync scheduled: interval=%s poll=%s", interval, pollInterval)
+		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
 		for range ticker.C {
+			if !autoSyncDue(lastRun, time.Now(), interval) {
+				continue
+			}
 			runAutoSyncOnce(symbol)
+			lastRun = time.Now()
 		}
 	}()
+}
+
+func autoSyncPollInterval(interval time.Duration) time.Duration {
+	if interval <= time.Minute {
+		return interval
+	}
+	return time.Minute
+}
+
+func autoSyncDue(lastRun, now time.Time, interval time.Duration) bool {
+	if interval <= 0 {
+		return false
+	}
+	return wallClockElapsed(lastRun, now) >= interval
+}
+
+func wallClockElapsed(start, end time.Time) time.Duration {
+	return time.Duration(end.UnixNano() - start.UnixNano())
 }
 
 func runAutoSyncOnce(symbol string) {
