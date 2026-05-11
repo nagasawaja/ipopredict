@@ -98,6 +98,9 @@
   <h3>调用参数（MarginRequest）</h3>
   <div class="kvs">
     <div class="k">公开发售股数</div><div class="v code">{{.P.Request.PublicShares}}</div>
+    <div class="k">原公开发售股数</div><div class="v code">{{if .P.Request.PublicSharesAdjusted}}{{.P.Request.OriginalPublicShares}}{{else}}-{{end}}</div>
+    <div class="k">分配机制</div><div class="v code">{{if .P.Request.AllocationMechanism}}{{.P.Request.AllocationMechanism}}{{else}}-{{end}}</div>
+    <div class="k">公开发售调整</div><div class="v">{{if .P.Request.PublicSharesAdjustmentNote}}{{.P.Request.PublicSharesAdjustmentNote}}{{else}}-{{end}}</div>
     <div class="k">每手股数</div><div class="v code">{{.P.Request.LotSize}}</div>
     <div class="k">发行价(港元)</div><div class="v code">{{.P.Request.Price}}</div>
     <div class="k">孖展总额/申购资金(港元)</div><div class="v code">{{fmtFloat .P.Request.BrokerMarginSum}}</div>

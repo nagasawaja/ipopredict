@@ -34,6 +34,7 @@
       <th class="num">募资</th>
       <th class="num">市值</th>
       <th class="num">公开募集股数</th>
+      <th>机制</th>
       <th class="num">PE</th>
       <th class="num">申请人数</th>
       <th class="num"><a href="#" id="sort-one-lot" style="color: inherit;">中签率</a></th>
@@ -123,6 +124,7 @@
     var raise = fmtRaise(r.amount_hkd, r.amount_text);
     var marketCap = fmtHkd(r.market_cap_hkd);
     var pdf = r.prospectus_url ? '<a href="'+r.prospectus_url+'" target="_blank" rel="noreferrer">PDF</a>' : '-';
+    var allocation = r.allocation_mechanism ? '<span title="'+fmt(r.allocation_mechanism_evidence)+'">'+r.allocation_mechanism+'</span>' : '-';
     var greyDate = r.grey_date || '-';
     return '<tr>' +
       '<td class="code"><a href="/stocks/'+r.stock_code+'">'+r.stock_code+'</a></td>' +
@@ -133,6 +135,7 @@
       '<td class="num">'+raise+'</td>' +
       '<td class="num">'+marketCap+'</td>' +
       '<td class="num">'+fmtShares(r.public_offer_shares)+'</td>' +
+      '<td class="code">'+allocation+'</td>' +
       '<td class="num">'+fmtNum(r.pe, 2)+'</td>' +
       '<td class="num">'+fmtNum(r.applicants, 0)+'</td>' +
       '<td class="num">'+fmtPct(r.one_lot_win_rate_pct)+'</td>' +
@@ -193,7 +196,7 @@
           loadStocks(buildParams());
         });
       }
-    }).catch(function(err){ document.getElementById('total-count').textContent = '0'; document.getElementById('list-tbody').innerHTML = '<tr><td colspan="18">加载失败</td></tr>'; });
+    }).catch(function(err){ document.getElementById('total-count').textContent = '0'; document.getElementById('list-tbody').innerHTML = '<tr><td colspan="19">加载失败</td></tr>'; });
   }
 
   function loadIntermediaries() {

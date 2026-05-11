@@ -48,6 +48,11 @@ type StockOffering struct {
 
 	ProspectusUrl string `gorm:"column:prospectus_url"`
 
+	AllocationMechanism           string  `gorm:"column:allocation_mechanism"`
+	AllocationMechanismConfidence float64 `gorm:"column:allocation_mechanism_confidence"`
+	AllocationMechanismSource     string  `gorm:"column:allocation_mechanism_source"`
+	AllocationMechanismEvidence   string  `gorm:"column:allocation_mechanism_evidence"`
+
 	CreatedAt time.Time `gorm:"column:created_at"`
 	UpdatedAt time.Time `gorm:"column:updated_at"`
 }

@@ -137,6 +137,13 @@ func upsertOffering(tx *gorm.DB, stockID uint64, d collector.StockDetail) error 
 
 		ProspectusUrl: o.ProspectusUrl,
 	}
+	row.AllocationMechanism = strings.TrimSpace(o.AllocationMechanism)
+	row.AllocationMechanismConfidence = o.AllocationMechanismConfidence
+	row.AllocationMechanismSource = strings.TrimSpace(o.AllocationMechanismSource)
+	row.AllocationMechanismEvidence = strings.TrimSpace(o.AllocationMechanismEvidence)
+	if row.AllocationMechanism == "" {
+		row.AllocationMechanism, row.AllocationMechanismConfidence, row.AllocationMechanismSource, row.AllocationMechanismEvidence = inferAllocationMechanism(d)
+	}
 
 	if err := tx.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "stock_id"}},
@@ -147,12 +154,74 @@ func upsertOffering(tx *gorm.DB, stockID uint64, d collector.StockDetail) error 
 			"apply_start_date", "apply_end_date", "list_date",
 			"admission_fee_hkd", "market_cap_hkd", "pe",
 			"prospectus_url",
+			"allocation_mechanism", "allocation_mechanism_confidence", "allocation_mechanism_source", "allocation_mechanism_evidence",
 			"updated_at",
 		}),
 	}).Create(&row).Error; err != nil {
 		return fmt.Errorf("upsert stock_offerings: %w", err)
 	}
 	return nil
+}
+
+func inferAllocationMechanism(d collector.StockDetail) (mechanism string, confidence float64, source string, evidence string) {
+	stockName := strings.TrimSpace(d.StockName)
+	stockCode := strings.TrimSpace(d.StockCode)
+	lowerEvidence := strings.ToLower(strings.Join(rawSectionValues(d.RawSections), "\n"))
+	switch {
+	case containsAny(lowerEvidence, "mechanism b", "機制b", "机制b", "no clawback mechanism", "無回撥機制", "无回拨机制"):
+		return "mechanism_b", 0.95, "raw_text", "raw text mentions Mechanism B/no clawback"
+	case containsAny(lowerEvidence, "mechanism a", "機制a", "机制a"):
+		return "mechanism_a", 0.95, "raw_text", "raw text mentions Mechanism A"
+	case containsAny(lowerEvidence, "chapter 18c", "第18c章", "特專科技", "特专科技", "specialist technology"):
+		return "chapter_18c", 0.95, "raw_text", "raw text mentions Chapter 18C/specialist technology"
+	case strings.HasSuffix(strings.ToUpper(stockName), "-P"):
+		return "chapter_18c_pre_commercial", 0.90, "stock_name_marker", stockName
+	case isKnownChapter18CStock(stockCode):
+		return "chapter_18c", 0.90, "known_18c_stock", stockCode
+	}
+
+	if d.Offering.GlobalOfferShares > 0 && d.Offering.PublicOfferShares > 0 {
+		publicPct := 100 * float64(d.Offering.PublicOfferShares) / float64(d.Offering.GlobalOfferShares)
+		switch {
+		case publicPct >= 9.5 && publicPct <= 60:
+			return "mechanism_b_likely", 0.60, "public_offer_ratio", fmt.Sprintf("public offer %.2f%% of global offer", publicPct)
+		case publicPct >= 4.5 && publicPct < 9.5:
+			return "mechanism_a_or_18c_likely", 0.45, "public_offer_ratio", fmt.Sprintf("public offer %.2f%% of global offer", publicPct)
+		}
+	}
+
+	if strings.HasSuffix(strings.ToUpper(stockName), "-B") {
+		return "unknown_biotech_marker", 0.30, "stock_name_marker", stockName
+	}
+	return "unknown", 0, "none", ""
+}
+
+func isKnownChapter18CStock(stockCode string) bool {
+	switch strings.TrimSpace(stockCode) {
+	case "06871":
+		return true
+	default:
+		return false
+	}
+}
+
+func rawSectionValues(sections []collector.RawSection) []string {
+	out := make([]string, 0, len(sections)*4)
+	for _, section := range sections {
+		for _, item := range section.Items {
+			out = append(out, item.Label, item.Value)
+		}
+	}
+	return out
+}
+
+func containsAny(s string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(s, strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
 }
 
 func upsertCompany(tx *gorm.DB, stockID uint64, d collector.StockDetail) error {

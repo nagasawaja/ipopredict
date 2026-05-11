@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"hk_ipo/pkg/storage/gormmodel"
 )
 
 func TestResolvePredictInputs(t *testing.T) {
@@ -91,6 +93,42 @@ func TestResolvePredictInputs(t *testing.T) {
 			t.Fatalf("inputMarginText=%q want 4000", inputMarginText)
 		}
 	})
+}
+
+func TestEffectivePredictPublicSharesChapter18C(t *testing.T) {
+	got, adjusted, note := effectivePredictPublicShares(gormmodel.StockOffering{
+		PublicOfferShares:   10_061_500,
+		GlobalOfferShares:   201_229_000,
+		LotSize:             200,
+		AllocationMechanism: "chapter_18c_pre_commercial",
+	})
+	if got != 40_245_800 {
+		t.Fatalf("public shares=%d want 40245800", got)
+	}
+	if !adjusted {
+		t.Fatalf("adjusted=false want true")
+	}
+	if !strings.Contains(note, "20%") {
+		t.Fatalf("note=%q want mention 20%%", note)
+	}
+}
+
+func TestEffectivePredictPublicSharesNon18C(t *testing.T) {
+	got, adjusted, note := effectivePredictPublicShares(gormmodel.StockOffering{
+		PublicOfferShares:   4_197_800,
+		GlobalOfferShares:   41_977_000,
+		LotSize:             200,
+		AllocationMechanism: "mechanism_b_likely",
+	})
+	if got != 4_197_800 {
+		t.Fatalf("public shares=%d want original", got)
+	}
+	if adjusted {
+		t.Fatalf("adjusted=true want false")
+	}
+	if note != "" {
+		t.Fatalf("note=%q want empty", note)
+	}
 }
 
 func TestParsePredictInputPostJSON(t *testing.T) {

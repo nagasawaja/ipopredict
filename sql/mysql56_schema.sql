@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS ipo_stock_offering (
   pe                DECIMAL(18,4) DEFAULT NULL,
 
   prospectus_url VARCHAR(512) DEFAULT NULL,
+  allocation_mechanism VARCHAR(64) DEFAULT NULL,
+  allocation_mechanism_confidence DECIMAL(5,4) DEFAULT NULL,
+  allocation_mechanism_source VARCHAR(64) DEFAULT NULL,
+  allocation_mechanism_evidence VARCHAR(512) DEFAULT NULL,
 
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -364,4 +368,3 @@ CREATE TABLE IF NOT EXISTS ipo_stock_raw_item (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET FOREIGN_KEY_CHECKS = 1;
-

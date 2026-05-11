@@ -210,6 +210,10 @@ func (s *server) handleDetail(w http.ResponseWriter, r *http.Request) {
 // predictRequestDisplay 用于在预测结果页展示的入参（与 ipo_predict.MarginRequest 一致）
 type predictRequestDisplay struct {
 	PublicShares                int64
+	OriginalPublicShares        int64
+	AllocationMechanism         string
+	PublicSharesAdjusted        bool
+	PublicSharesAdjustmentNote  string
 	LotSize                     int
 	Price                       float64
 	BrokerMarginSum             float64
@@ -313,7 +317,10 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 		s.renderPredict(w, page)
 		return
 	}
-	fundraisingAmt := float64(offering.PublicOfferShares) * price
+	predictPublicShares, publicSharesAdjusted, publicSharesNote := effectivePredictPublicShares(offering)
+	effectiveOffering := offering
+	effectiveOffering.PublicOfferShares = predictPublicShares
+	fundraisingAmt := float64(predictPublicShares) * price
 	input, err := parsePredictInput(r)
 	if err != nil {
 		page.ErrMsg = "请求参数 JSON 格式错误: " + err.Error()
@@ -374,7 +381,7 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 	page.InputSub = effectiveSub
 	page.InputMargin = brokerMarginSum
 
-	buckets, err := s.buildBucketsFromProspectus(ctx, stock.ID, offering, price)
+	buckets, err := s.buildBucketsFromProspectus(ctx, stock.ID, effectiveOffering, price)
 	if err != nil {
 		page.ErrMsg = "无法从招股书提取真实申购档位: " + err.Error()
 		s.renderPredict(w, page)
@@ -404,7 +411,7 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := ipo_predict.MarginRequest{
-		PublicShares:                offering.PublicOfferShares,
+		PublicShares:                predictPublicShares,
 		LotSize:                     offering.LotSize,
 		Price:                       price,
 		BrokerMarginSum:             brokerMarginSum,
@@ -422,6 +429,10 @@ func (s *server) handlePredict(w http.ResponseWriter, r *http.Request) {
 	}
 	page.Request = &predictRequestDisplay{
 		PublicShares:                req.PublicShares,
+		OriginalPublicShares:        offering.PublicOfferShares,
+		AllocationMechanism:         strings.TrimSpace(offering.AllocationMechanism),
+		PublicSharesAdjusted:        publicSharesAdjusted,
+		PublicSharesAdjustmentNote:  publicSharesNote,
 		LotSize:                     req.LotSize,
 		Price:                       req.Price,
 		BrokerMarginSum:             req.BrokerMarginSum,
@@ -503,6 +514,40 @@ func resolveDefaultPredictSubscriptionMultiple(publicSubscriptionMultiple float6
 		return publicSubscriptionMultiple
 	}
 	return defaultPredictSubscriptionMultiple
+}
+
+func effectivePredictPublicShares(offering gormmodel.StockOffering) (int64, bool, string) {
+	original := offering.PublicOfferShares
+	if !isChapter18CMechanism(offering.AllocationMechanism) {
+		return original, false, ""
+	}
+	if offering.GlobalOfferShares <= 0 || offering.LotSize <= 0 {
+		return original, false, "18C 机制已识别，但缺少全球发售股数或每手股数，沿用原公开发售股数"
+	}
+	target := roundSharesToLot(float64(offering.GlobalOfferShares)*0.20, offering.LotSize)
+	if target <= 0 {
+		return original, false, "18C 机制已识别，但 20% 公开发售股数计算无效，沿用原公开发售股数"
+	}
+	if target == original {
+		return original, false, "18C 机制已识别，公开发售股数已为全球发售 20%"
+	}
+	note := fmt.Sprintf("18C 预测按全球发售 20%% 重置公开发售股数：%d -> %d", original, target)
+	return target, true, note
+}
+
+func isChapter18CMechanism(mechanism string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(mechanism)), "chapter_18c")
+}
+
+func roundSharesToLot(shares float64, lotSize int) int64 {
+	if shares <= 0 || lotSize <= 0 {
+		return 0
+	}
+	lots := int64(math.Round(shares / float64(lotSize)))
+	if lots <= 0 {
+		lots = 1
+	}
+	return lots * int64(lotSize)
 }
 
 func predictJSONFieldString(v any) (string, error) {
@@ -879,6 +924,10 @@ type apiStocksRow struct {
 	MarketCapHkd         *float64 `json:"market_cap_hkd"`
 	Pe                   *float64 `json:"pe"`
 	ProspectusUrl        *string  `json:"prospectus_url"`
+	AllocationMechanism  *string  `json:"allocation_mechanism"`
+	AllocationConfidence *float64 `json:"allocation_mechanism_confidence"`
+	AllocationSource     *string  `json:"allocation_mechanism_source"`
+	AllocationEvidence   *string  `json:"allocation_mechanism_evidence"`
 	RaiseMoneyHkd        *float64 `json:"amount_hkd"`
 	RaiseMoneyText       *string  `json:"amount_text"`
 	Applicants           *int64   `json:"applicants"`
@@ -941,6 +990,27 @@ func stockListRowToAPI(r stockListRow) apiStocksRow {
 	}
 	if r.ProspectusUrl.Valid {
 		out.ProspectusUrl = &r.ProspectusUrl.String
+	}
+	if r.AllocationMechanism.Valid {
+		s := strings.TrimSpace(r.AllocationMechanism.String)
+		if s != "" {
+			out.AllocationMechanism = &s
+		}
+	}
+	if r.AllocationConfidence.Valid {
+		out.AllocationConfidence = &r.AllocationConfidence.Float64
+	}
+	if r.AllocationSource.Valid {
+		s := strings.TrimSpace(r.AllocationSource.String)
+		if s != "" {
+			out.AllocationSource = &s
+		}
+	}
+	if r.AllocationEvidence.Valid {
+		s := strings.TrimSpace(r.AllocationEvidence.String)
+		if s != "" {
+			out.AllocationEvidence = &s
+		}
 	}
 	if r.RaiseMoneyHkd.Valid {
 		out.RaiseMoneyHkd = &r.RaiseMoneyHkd.Float64
@@ -1115,15 +1185,19 @@ type stockListRow struct {
 	ApplyStartDate sql.NullTime `gorm:"column:apply_start_date"`
 	ApplyEndDate   sql.NullTime `gorm:"column:apply_end_date"`
 
-	OfferPriceLow     sql.NullFloat64 `gorm:"column:offer_price_low"`
-	OfferPriceHigh    sql.NullFloat64 `gorm:"column:offer_price_high"`
-	OfferPrice        sql.NullFloat64 `gorm:"column:offer_price"`
-	LotSize           sql.NullInt64   `gorm:"column:lot_size"`
-	PublicOfferShares sql.NullInt64   `gorm:"column:public_offer_shares"`
-	AdmissionFeeHkd   sql.NullFloat64 `gorm:"column:admission_fee_hkd"`
-	MarketCapHkd      sql.NullFloat64 `gorm:"column:market_cap_hkd"`
-	Pe                sql.NullFloat64 `gorm:"column:pe"`
-	ProspectusUrl     sql.NullString  `gorm:"column:prospectus_url"`
+	OfferPriceLow        sql.NullFloat64 `gorm:"column:offer_price_low"`
+	OfferPriceHigh       sql.NullFloat64 `gorm:"column:offer_price_high"`
+	OfferPrice           sql.NullFloat64 `gorm:"column:offer_price"`
+	LotSize              sql.NullInt64   `gorm:"column:lot_size"`
+	PublicOfferShares    sql.NullInt64   `gorm:"column:public_offer_shares"`
+	AdmissionFeeHkd      sql.NullFloat64 `gorm:"column:admission_fee_hkd"`
+	MarketCapHkd         sql.NullFloat64 `gorm:"column:market_cap_hkd"`
+	Pe                   sql.NullFloat64 `gorm:"column:pe"`
+	ProspectusUrl        sql.NullString  `gorm:"column:prospectus_url"`
+	AllocationMechanism  sql.NullString  `gorm:"column:allocation_mechanism"`
+	AllocationConfidence sql.NullFloat64 `gorm:"column:allocation_mechanism_confidence"`
+	AllocationSource     sql.NullString  `gorm:"column:allocation_mechanism_source"`
+	AllocationEvidence   sql.NullString  `gorm:"column:allocation_mechanism_evidence"`
 
 	RaiseMoneyHkd  sql.NullFloat64 `gorm:"column:amount_hkd"`
 	RaiseMoneyText sql.NullString  `gorm:"column:amount_text"`
@@ -1194,6 +1268,10 @@ func listStocks(ctx context.Context, db *gorm.DB, f listFilter, limit, offset in
 			"o.market_cap_hkd",
 			"o.pe",
 			"o.prospectus_url",
+			"o.allocation_mechanism",
+			"o.allocation_mechanism_confidence",
+			"o.allocation_mechanism_source",
+			"o.allocation_mechanism_evidence",
 			"r.amount_hkd",
 			"r.amount_text",
 			"a.applicants",

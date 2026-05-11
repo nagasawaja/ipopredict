@@ -154,6 +154,10 @@
     <div class="k">入场费(HKD)</div><div class="v code">{{fmtFloatComma .D.Offering.AdmissionFeeHkd 2}}</div>
     <div class="k">市值(HKD)</div><div class="v code">{{fmtFloatComma .D.Offering.MarketCapHkd 0}}</div>
     <div class="k">市盈率(PE)</div><div class="v code">{{.D.Offering.Pe}}</div>
+    <div class="k">分配机制</div><div class="v code">{{if .D.Offering.AllocationMechanism}}{{.D.Offering.AllocationMechanism}}{{else}}-{{end}}</div>
+    <div class="k">机制置信度</div><div class="v code">{{.D.Offering.AllocationMechanismConfidence}}</div>
+    <div class="k">机制来源</div><div class="v code">{{if .D.Offering.AllocationMechanismSource}}{{.D.Offering.AllocationMechanismSource}}{{else}}-{{end}}</div>
+    <div class="k">机制证据</div><div class="v">{{if .D.Offering.AllocationMechanismEvidence}}{{.D.Offering.AllocationMechanismEvidence}}{{else}}-{{end}}</div>
     <div class="k">招股书</div><div class="v">{{if .D.Offering.ProspectusUrl}}<a href="{{.D.Offering.ProspectusUrl}}" target="_blank" rel="noreferrer">{{.D.Offering.ProspectusUrl}}</a>{{else}}-{{end}}</div>
   </div>
 </div>
