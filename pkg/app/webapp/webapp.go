@@ -117,6 +117,7 @@ func Run(addr string) error {
 				return strconv.FormatInt(calcMinWinLots(applicants, winApplicants, allocatedLots), 10) + "手"
 			},
 			"calcAllotmentTierAmountHKD": calcAllotmentTierAmountHKD,
+			"allocationLabel":            allocationMechanismLabel,
 		}).
 		ParseFS(templateFS, "templates/*.html"))
 
@@ -537,6 +538,29 @@ func effectivePredictPublicShares(offering gormmodel.StockOffering) (int64, bool
 
 func isChapter18CMechanism(mechanism string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(mechanism)), "chapter_18c")
+}
+
+func allocationMechanismLabel(mechanism string) string {
+	switch strings.ToLower(strings.TrimSpace(mechanism)) {
+	case "mechanism_b":
+		return "B"
+	case "mechanism_b_likely":
+		return "B?"
+	case "mechanism_a":
+		return "A"
+	case "mechanism_a_or_18c_likely":
+		return "A/18C?"
+	case "chapter_18c":
+		return "18C"
+	case "chapter_18c_pre_commercial":
+		return "18C-P"
+	case "unknown_biotech_marker":
+		return "Bio?"
+	case "unknown", "":
+		return "-"
+	default:
+		return mechanism
+	}
 }
 
 func roundSharesToLot(shares float64, lotSize int) int64 {

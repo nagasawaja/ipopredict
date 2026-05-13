@@ -34,7 +34,7 @@
       <th class="num">募资</th>
       <th class="num">市值</th>
       <th class="num">公开募集股数</th>
-      <th>机制</th>
+      <th class="mechanism-col">机制</th>
       <th class="num">PE</th>
       <th class="num">申请人数</th>
       <th class="num"><a href="#" id="sort-one-lot" style="color: inherit;">中签率</a></th>
@@ -108,6 +108,18 @@
     if (n >= 1e4) return (n / 1e4).toFixed(2) + '万';
     return String(Math.round(n));
   }
+  function allocationLabel(v) {
+    v = String(v || '').trim().toLowerCase();
+    if (v === 'mechanism_b') return 'B';
+    if (v === 'mechanism_b_likely') return 'B?';
+    if (v === 'mechanism_a') return 'A';
+    if (v === 'mechanism_a_or_18c_likely') return 'A/18C?';
+    if (v === 'chapter_18c') return '18C';
+    if (v === 'chapter_18c_pre_commercial') return '18C-P';
+    if (v === 'unknown_biotech_marker') return 'Bio?';
+    if (!v || v === 'unknown') return '-';
+    return v;
+  }
 
   function buildParams(extra) {
     var form = document.getElementById('list-form');
@@ -124,7 +136,8 @@
     var raise = fmtRaise(r.amount_hkd, r.amount_text);
     var marketCap = fmtHkd(r.market_cap_hkd);
     var pdf = r.prospectus_url ? '<a href="'+r.prospectus_url+'" target="_blank" rel="noreferrer">PDF</a>' : '-';
-    var allocation = r.allocation_mechanism ? '<span title="'+fmt(r.allocation_mechanism_evidence)+'">'+r.allocation_mechanism+'</span>' : '-';
+    var allocationTitle = [r.allocation_mechanism, r.allocation_mechanism_evidence].filter(Boolean).join(' · ');
+    var allocation = r.allocation_mechanism ? '<span title="'+fmt(allocationTitle)+'">'+allocationLabel(r.allocation_mechanism)+'</span>' : '-';
     var greyDate = r.grey_date || '-';
     return '<tr>' +
       '<td class="code"><a href="/stocks/'+r.stock_code+'">'+r.stock_code+'</a></td>' +
@@ -135,7 +148,7 @@
       '<td class="num">'+raise+'</td>' +
       '<td class="num">'+marketCap+'</td>' +
       '<td class="num">'+fmtShares(r.public_offer_shares)+'</td>' +
-      '<td class="code">'+allocation+'</td>' +
+      '<td class="code mechanism-col">'+allocation+'</td>' +
       '<td class="num">'+fmtNum(r.pe, 2)+'</td>' +
       '<td class="num">'+fmtNum(r.applicants, 0)+'</td>' +
       '<td class="num">'+fmtPct(r.one_lot_win_rate_pct)+'</td>' +
